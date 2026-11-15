@@ -10,7 +10,8 @@ export default {
   async fetch(req, env) {
     const url = new URL(req.url);
     if (req.method === 'OPTIONS') return new Response(null, { headers: CORS });
-    if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/salute')) return risposta(200, { ok: true, servizio: 'rapporti', token: !!env.GITHUB_TOKEN });
+    if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/salute')) return risposta(200, { ok: true, servizio: 'rapporti', token: !!env.GITHUB_TOKEN, assistente: !!env.GEMINI_KEY });
+    if (req.method === 'POST' && url.pathname === '/chiedi') return chiedi(req, env);
     const m = url.pathname.match(/^\/r\/([A-Za-z0-9_-]{2,40})$/);
     if (req.method !== 'POST' || !m) return risposta(404, { errore: 'percorso' });
     if (!env.GITHUB_TOKEN) return risposta(500, { errore: 'GITHUB_TOKEN mancante' });
@@ -38,3 +39,34 @@ export default {
     return risposta(201, { ok: true, salvati: lista.length, file: nome });
   }
 };
+
+// Assistente: domanda in parole normali → risposta di Gemini (la chiave resta qui, mai nell'app)
+// POST /chiedi  { domanda, contesto }  → { risposta, prodotti: [{desc,qta,um}] }
+const ORIGINI = ['https://vincenzociriello91-hub.github.io', 'http://localhost:8765'];
+async function chiedi(req, env) {
+  if (!env.GEMINI_KEY) return risposta(503, { errore: 'GEMINI_KEY mancante' });
+  const origine = req.headers.get('Origin') || '';
+  if (!ORIGINI.includes(origine)) return risposta(403, { errore: 'origine' });
+  let b; try { b = JSON.parse(await req.text()); } catch { return risposta(400, { errore: 'JSON' }); }
+  const domanda = String(b.domanda || '').slice(0, 600).trim();
+  const contesto = String(b.contesto || '').slice(0, 8000);
+  if (domanda.length < 2) return risposta(400, { errore: 'domanda vuota' });
+  const istruzioni = `Sei l'assistente del banco di un grossista di materiale elettrico in Italia (Elettrocampania).
+Rispondi in italiano semplice, adatto anche a un privato che non è del mestiere, ma preciso per un elettricista.
+Capisci cosa vuole davvero chi chiede, anche se la domanda è scritta male o è vaga.
+Dai una risposta pratica e breve (massimo 120 parole): cosa serve, quale misura o modello, quante unità, a cosa fare attenzione.
+Se un dato essenziale manca, dai comunque la risposta più probabile e indica in una frase quale dato serve per essere sicuri.
+Per lavori su impianti fissi ricorda, solo se pertinente, che l'installazione va fatta da un elettricista abilitato.
+Usa i dati del contesto (sono tabelle e calcoli dell'app) quando servono; non inventare codici articolo.
+Rispondi SOLO con JSON: {"risposta":"testo","prodotti":[{"desc":"descrizione breve del prodotto","qta":numero,"um":"pz|m|conf"}]}`;
+  const modello = env.GEMINI_MODEL || 'gemini-flash-latest';
+  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modello)}:generateContent?key=${encodeURIComponent(env.GEMINI_KEY)}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ systemInstruction: { parts: [{ text: istruzioni }] }, contents: [{ role: 'user', parts: [{ text: `Domanda: ${domanda}\n\nContesto dall'app:\n${contesto}` }] }], generationConfig: { temperature: 0.3, responseMimeType: 'application/json' } })
+  });
+  if (!r.ok) return risposta(502, { errore: 'gemini', stato: r.status });
+  const j = await r.json();
+  const testo = j.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '';
+  try { const o = JSON.parse(testo.match(/\{[\s\S]*\}/)[0]); return risposta(200, { risposta: String(o.risposta || ''), prodotti: Array.isArray(o.prodotti) ? o.prodotti.slice(0, 20) : [] }); }
+  catch { return risposta(200, { risposta: testo.slice(0, 2000), prodotti: [] }); }
+}
