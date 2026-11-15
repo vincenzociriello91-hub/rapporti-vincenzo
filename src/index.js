@@ -45,12 +45,16 @@ export default {
 
 // Chiamata a Gemini: pensiero ridotto per rispondere in pochi secondi; se il modello non accetta l'opzione, riprova senza.
 async function chiamaGemini(env, corpo) {
-  const modello = env.GEMINI_MODEL || 'gemini-flash-latest';
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modello)}:generateContent?key=${encodeURIComponent(env.GEMINI_KEY)}`;
-  const invia = c => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(c) });
-  const veloce = { ...corpo, generationConfig: { ...corpo.generationConfig, thinkingConfig: { thinkingBudget: 0 } } };
-  let r = await invia(veloce);
-  if (r.status === 400) r = await invia(corpo);
+  // Se un modello è sovraccarico (503/429) o non esiste (404), passa al successivo.
+  const modelli = [...new Set([env.GEMINI_MODEL || 'gemini-flash-latest', 'gemini-2.5-flash', 'gemini-flash-lite-latest', 'gemini-2.5-flash-lite'])];
+  let r;
+  for (const modello of modelli) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modello)}:generateContent?key=${encodeURIComponent(env.GEMINI_KEY)}`;
+    const invia = c => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(c) });
+    r = await invia({ ...corpo, generationConfig: { ...corpo.generationConfig, thinkingConfig: { thinkingBudget: 0 } } });
+    if (r.status === 400) r = await invia(corpo);
+    if (![404, 429, 500, 503].includes(r.status)) { r.modello = modello; return r; }
+  }
   return r;
 }
 
@@ -103,5 +107,5 @@ async function provaAssistente(env) {
   const t0 = Date.now();
   const r = await chiamaGemini(env, { contents: [{ parts: [{ text: 'Rispondi solo: ok' }] }], generationConfig: { temperature: 0 } });
   const testo = r.ok ? ((await r.json()).candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '') : (await r.text()).slice(0, 300);
-  return risposta(200, { stato: r.status, ms: Date.now() - t0, modello: env.GEMINI_MODEL || 'gemini-flash-latest', testo });
+  return risposta(200, { stato: r.status, ms: Date.now() - t0, modello: r.modello || '-', testo });
 }
