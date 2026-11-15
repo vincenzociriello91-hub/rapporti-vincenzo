@@ -12,6 +12,7 @@ export default {
     if (req.method === 'OPTIONS') return new Response(null, { headers: CORS });
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/salute')) return risposta(200, { ok: true, servizio: 'rapporti', token: !!env.GITHUB_TOKEN, assistente: !!env.GEMINI_KEY });
     if (req.method === 'POST' && url.pathname === '/chiedi') return chiedi(req, env);
+    if (req.method === 'POST' && url.pathname === '/gemini') return gemini(req, env);
     const m = url.pathname.match(/^\/r\/([A-Za-z0-9_-]{2,40})$/);
     if (req.method !== 'POST' || !m) return risposta(404, { errore: 'percorso' });
     if (!env.GITHUB_TOKEN) return risposta(500, { errore: 'GITHUB_TOKEN mancante' });
@@ -69,4 +70,24 @@ Rispondi SOLO con JSON: {"risposta":"testo","prodotti":[{"desc":"descrizione bre
   const testo = j.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '';
   try { const o = JSON.parse(testo.match(/\{[\s\S]*\}/)[0]); return risposta(200, { risposta: String(o.risposta || ''), prodotti: Array.isArray(o.prodotti) ? o.prodotti.slice(0, 20) : [] }); }
   catch { return risposta(200, { risposta: testo.slice(0, 2000), prodotti: [] }); }
+}
+
+// Foto del pezzo e Ascolto: testo (+ fino a 4 foto JPEG) → testo di Gemini, con la chiave lato server
+// POST /gemini  { testo, immagini: [base64] }  → { testo }
+async function gemini(req, env) {
+  if (!env.GEMINI_KEY) return risposta(503, { errore: 'GEMINI_KEY mancante' });
+  if (!ORIGINI.includes(req.headers.get('Origin') || '')) return risposta(403, { errore: 'origine' });
+  let b; try { b = JSON.parse(await req.text()); } catch { return risposta(400, { errore: 'JSON' }); }
+  const testo = String(b.testo || '').slice(0, 6000);
+  const immagini = (Array.isArray(b.immagini) ? b.immagini : []).slice(0, 4).filter(x => typeof x === 'string' && x.length < 2000000);
+  if (testo.length < 2) return risposta(400, { errore: 'testo vuoto' });
+  const parts = [{ text: testo }, ...immagini.map(d => ({ inline_data: { mime_type: 'image/jpeg', data: d } }))];
+  const modello = env.GEMINI_MODEL || 'gemini-flash-latest';
+  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modello)}:generateContent?key=${encodeURIComponent(env.GEMINI_KEY)}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ contents: [{ parts }], generationConfig: { temperature: 0.2 } })
+  });
+  if (!r.ok) return risposta(502, { errore: 'gemini', stato: r.status });
+  const j = await r.json();
+  return risposta(200, { testo: j.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '' });
 }
