@@ -13,6 +13,7 @@ export default {
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/salute')) return risposta(200, { ok: true, servizio: 'rapporti', token: !!env.GITHUB_TOKEN, assistente: !!env.GEMINI_KEY });
     if (req.method === 'POST' && url.pathname === '/chiedi') return chiedi(req, env);
     if (req.method === 'POST' && url.pathname === '/gemini') return gemini(req, env);
+    if (req.method === 'GET' && url.pathname === '/prova-assistente') return provaAssistente(env);
     const m = url.pathname.match(/^\/r\/([A-Za-z0-9_-]{2,40})$/);
     if (req.method !== 'POST' || !m) return risposta(404, { errore: 'percorso' });
     if (!env.GITHUB_TOKEN) return risposta(500, { errore: 'GITHUB_TOKEN mancante' });
@@ -41,6 +42,18 @@ export default {
   }
 };
 
+
+// Chiamata a Gemini: pensiero ridotto per rispondere in pochi secondi; se il modello non accetta l'opzione, riprova senza.
+async function chiamaGemini(env, corpo) {
+  const modello = env.GEMINI_MODEL || 'gemini-flash-latest';
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modello)}:generateContent?key=${encodeURIComponent(env.GEMINI_KEY)}`;
+  const invia = c => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(c) });
+  const veloce = { ...corpo, generationConfig: { ...corpo.generationConfig, thinkingConfig: { thinkingBudget: 0 } } };
+  let r = await invia(veloce);
+  if (r.status === 400) r = await invia(corpo);
+  return r;
+}
+
 // Assistente: domanda in parole normali → risposta di Gemini (la chiave resta qui, mai nell'app)
 // POST /chiedi  { domanda, contesto }  → { risposta, prodotti: [{desc,qta,um}] }
 const ORIGINI = ['https://vincenzociriello91-hub.github.io', 'http://localhost:8765'];
@@ -60,11 +73,7 @@ Se un dato essenziale manca, dai comunque la risposta più probabile e indica in
 Per lavori su impianti fissi ricorda, solo se pertinente, che l'installazione va fatta da un elettricista abilitato.
 Usa i dati del contesto (sono tabelle e calcoli dell'app) quando servono; non inventare codici articolo.
 Rispondi SOLO con JSON: {"risposta":"testo","prodotti":[{"desc":"descrizione breve del prodotto","qta":numero,"um":"pz|m|conf"}]}`;
-  const modello = env.GEMINI_MODEL || 'gemini-flash-latest';
-  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modello)}:generateContent?key=${encodeURIComponent(env.GEMINI_KEY)}`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ systemInstruction: { parts: [{ text: istruzioni }] }, contents: [{ role: 'user', parts: [{ text: `Domanda: ${domanda}\n\nContesto dall'app:\n${contesto}` }] }], generationConfig: { temperature: 0.3, responseMimeType: 'application/json' } })
-  });
+  const r = await chiamaGemini(env, { systemInstruction: { parts: [{ text: istruzioni }] }, contents: [{ role: 'user', parts: [{ text: `Domanda: ${domanda}\n\nContesto dall'app:\n${contesto}` }] }], generationConfig: { temperature: 0.3, responseMimeType: 'application/json' } });
   if (!r.ok) return risposta(502, { errore: 'gemini', stato: r.status });
   const j = await r.json();
   const testo = j.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '';
@@ -82,12 +91,17 @@ async function gemini(req, env) {
   const immagini = (Array.isArray(b.immagini) ? b.immagini : []).slice(0, 4).filter(x => typeof x === 'string' && x.length < 2000000);
   if (testo.length < 2) return risposta(400, { errore: 'testo vuoto' });
   const parts = [{ text: testo }, ...immagini.map(d => ({ inline_data: { mime_type: 'image/jpeg', data: d } }))];
-  const modello = env.GEMINI_MODEL || 'gemini-flash-latest';
-  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modello)}:generateContent?key=${encodeURIComponent(env.GEMINI_KEY)}`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ contents: [{ parts }], generationConfig: { temperature: 0.2 } })
-  });
+  const r = await chiamaGemini(env, { contents: [{ parts }], generationConfig: { temperature: 0.2 } });
   if (!r.ok) return risposta(502, { errore: 'gemini', stato: r.status });
   const j = await r.json();
   return risposta(200, { testo: j.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '' });
+}
+
+// Diagnostica: una domanda fissa, restituisce esito e tempo (per controllare che Gemini risponda)
+async function provaAssistente(env) {
+  if (!env.GEMINI_KEY) return risposta(503, { errore: 'GEMINI_KEY mancante' });
+  const t0 = Date.now();
+  const r = await chiamaGemini(env, { contents: [{ parts: [{ text: 'Rispondi solo: ok' }] }], generationConfig: { temperature: 0 } });
+  const testo = r.ok ? ((await r.json()).candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '') : (await r.text()).slice(0, 300);
+  return risposta(200, { stato: r.status, ms: Date.now() - t0, modello: env.GEMINI_MODEL || 'gemini-flash-latest', testo });
 }
