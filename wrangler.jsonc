@@ -1,0 +1,7 @@
+{
+  "name": "rapporti-vincenzo",
+  "main": "src/index.js",
+  "compatibility_date": "2026-11-01",
+  "workers_dev": true,
+  "vars": { "OWNER": "vincenzociriello91-hub", "APP_CONSENTITE": "AssistenteBanco,DriveHub" }
+}
