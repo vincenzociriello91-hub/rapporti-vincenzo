@@ -4,7 +4,7 @@
 import { DurableObject } from 'cloudflare:workers';
 
 const ORIGINI = ['https://vincenzociriello91-hub.github.io', 'http://localhost:8765'];
-const MAX_MSG = 200000;
+const MAX_MSG = 400000; // le immagini disegnate dal telefono (riserva) arrivano fino a ~300 KB
 const COMPAGNI_ANIMALI = { cane: { pf: 13, ca: 12, abilita: 'fiuto, morso' }, lupo: { pf: 11, ca: 13, abilita: 'branco, morso' }, falco: { pf: 1, ca: 13, abilita: 'vista acuta, volo' }, gatto: { pf: 2, ca: 12, abilita: 'furtività' }, cavallo: { pf: 19, ca: 10, abilita: 'cavalcatura, veloce' }, pony: { pf: 11, ca: 10, abilita: 'cavalcatura, robusto' }, mulo: { pf: 11, ca: 10, abilita: 'porta carichi' }, corvo: { pf: 1, ca: 12, abilita: 'imita voci, volo' } };
 const STANZE_BASE = { dormitorio: { nome: 'Dormitorio', prezzo: 150, bonus: 'riposo lungo: tutti recuperano anche 1 dado vita' }, laboratorio: { nome: 'Laboratorio', prezzo: 250, bonus: '+2 ai tiri per creare oggetti' }, stalla: { nome: 'Stalla', prezzo: 150, bonus: 'cavalcature al sicuro, viaggi più veloci' }, cappella: { nome: 'Cappella', prezzo: 300, bonus: 'una benedizione per sessione: vantaggio a un tiro salvezza' }, biblioteca: { nome: 'Biblioteca', prezzo: 300, bonus: 'vantaggio alle prove di conoscenza una volta per sessione' }, armeria: { nome: 'Armeria', prezzo: 400, bonus: 'armi riparate e affilate: +1 ai danni del primo colpo di ogni scontro' } };
 const MESTIERI = { alchimista: 'Alchimista', fabbro: 'Fabbro', cuoco: 'Cuoco', erborista: 'Erborista', arcaio: 'Arcaio' };
@@ -93,8 +93,18 @@ export class Tavolo extends DurableObject {
       if (q.n >= 40 || (!forza && Date.now() - q.ultima < 120000)) return null; // al massimo 40 al giorno, una ogni 2 minuti
       q.n++; q.ultima = Date.now(); await this.put('quotaImmagini', q);
       const prova = (await this.get('campagna'))?.prova; // partita bot: non consuma i crediti gratuiti delle immagini
-      const jpeg = await generaImmagine(prova && !vera ? { ...this.env, IMG_FINTA: 1 } : this.env, prompt, prova);
-      if (!jpeg) return null;
+      const jpeg = await generaImmagine(prova ? { ...this.env, IMG_FINTA: 1 } : this.env, prompt, prova);
+      if (!jpeg) throw new Error('nessun servizio immagini ha risposto');
+      return await this.salvaIllustrazione(jpeg, didascalia);
+    } catch (e) {
+      this.erroreImg = String(e?.message || e).slice(0, 700); console.error('illustra', this.erroreImg);
+      // riserva finale: chiede a un telefono del tavolo di disegnarla (servizio gratuito dal suo collegamento) e di mandarla qui
+      if (forza || vera) { const id = 'x' + Date.now().toString(36); this.daDisegnare = { id, didascalia, t: Date.now() }; this.tutti({ t: 'disegna_tu', id, prompt: STILE_IMG + prompt }); this.erroreImg = 'riserva'; }
+      return null;
+    }
+  }
+  async salvaIllustrazione(jpeg, didascalia) {
+    {
       const id = 'i' + Date.now().toString(36);
       await this.ctx.storage.put('img:' + id, jpeg);
       const elenco = await this.get('immagini', []);
@@ -108,7 +118,7 @@ export class Tavolo extends DurableObject {
       await this.put('diario', d);
       this.tutti({ t: 'diario', ev: d[d.length - 1] });
       return id;
-    } catch (e) { this.erroreImg = String(e?.message || e).slice(0, 700); console.error('illustra', this.erroreImg); return null; }
+    }
   }
   // ---------- riepilogo illustrato di fine sessione ----------
   async riepilogo() {
@@ -509,7 +519,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     // se Gemini non risponde si disegna comunque il luogo, senza lasciare il gruppo ad aspettare
     const prompt = t.match(/PROMPT:\s*(.+)/i)?.[1] || `Detailed fantasy D&D illustration of ${luogo?.nome || 'an adventuring party'} (${luogo?.tipo || 'tavern'}), cinematic lighting, painterly, atmospheric`, did = t.match(/DIDASCALIA:\s*(.+)/i)?.[1];
     const ok = await this.illustra(prompt, did || luogo?.nome || 'La scena', forza, forza);
-    if (!ok && forza) this.tutti({ t: 'avviso', msg: /4006|429|402|quota|error data/i.test(this.erroreImg || '') ? "Immagini gratuite finite per oggi: tornano dopo l'una di notte." : "L'illustrazione non è riuscita: riprova tra qualche minuto", motivo: this.erroreImg || null });
+    if (!ok && forza && this.erroreImg !== 'riserva') this.tutti({ t: 'avviso', msg: /4006|429|402|quota|error data/i.test(this.erroreImg || '') ? "Immagini gratuite finite per oggi: tornano dopo l'una di notte." : "L'illustrazione non è riuscita: riprova tra qualche minuto", motivo: this.erroreImg || null });
   }
 
   // ---------- connettore per Claude: lettura dello stato e preparazione delle sessioni ----------
@@ -614,6 +624,11 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
         case 'missione_accetta': return this.missioneAccetta(io, String(m.id || ''));
         case 'reazione': { if (!REAZIONI.includes(m.emoji)) return; const ora = Date.now(); if (ora - (this.reazioni.get(io) || 0) < 1200) return; this.reazioni.set(io, ora); return this.tutti({ t: 'reazione', emoji: m.emoji, nome: me.nome }); }
         case 'traduci': return this.traduci(ws, m);
+        case 'immagine_esterna': {
+          const att = this.daDisegnare; if (!att || att.id !== m.id || Date.now() - att.t > 180000 || typeof m.dati !== 'string' || m.dati.length > 380000) return;
+          const jpeg = Uint8Array.from(atob(m.dati), c => c.charCodeAt(0)); if (jpeg[0] !== 0xFF || jpeg[1] !== 0xD8) return; // solo JPEG veri
+          this.daDisegnare = null; return this.salvaIllustrazione(jpeg, att.didascalia);
+        }
         case 'nota_mappa': if (me.ruolo === 'spettatore') return; return this.notaMappa(io, me, m);
         case 'gioco_apri': case 'gioco_entra': case 'gioco_via': case 'gioco_annulla': if (me.ruolo === 'spettatore') return; return this.giocoTaverna(io, me, capo, m);
         case 'serata_nuova': case 'serata_risposta': case 'serata_togli': return this.serata(io, me, capo, m);
@@ -1518,18 +1533,14 @@ export function pngCasuale() {
 // "Goblin 2", "goblin arciere" -> "goblin arciere"; umanoidi e orchi usano le figure LPC
 export const UMANOIDI = /bandit|brigant|guardi|soldat|cultist|mago|strega|ladro|assassin|cavalier|mercenar|predon|pirat|negromant|sacerdot|capitan|stregon|goblin|orco|orchi|hobgoblin|bugbear|drow|elfo oscuro/;
 export function nomeMostro(n) { return testo(n, 40).toLowerCase().replace(/[^a-zà-ù ]+/g, ' ').replace(/\s+/g, ' ').trim(); }
+const STILE_IMG = 'Realistic cinematic fantasy illustration, Dungeons and Dragons, dramatic volumetric lighting, highly detailed, painterly realism, no text, no watermark. ';
 export async function generaImmagine(env, prompt, piccola) {
-  const stile = 'Realistic cinematic fantasy illustration, Dungeons and Dragons, dramatic volumetric lighting, highly detailed, painterly realism, no text, no watermark. ';
+  const stile = STILE_IMG;
   if (env.IMG_FINTA) return Uint8Array.from(atob('/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/yQALCAABAAEBAREA/8wABgAQEAX/2gAIAQEAAD8A0s8g/9k='), c => c.charCodeAt(0));
   const errori = []; let errore = null;
   if (env.AI) {
     try { const r = await env.AI.run('@cf/black-forest-labs/flux-1-schnell', { prompt: piccola ? prompt : stile + prompt, steps: piccola ? 4 : 6 }); if (r?.image) return Uint8Array.from(atob(r.image), c => c.charCodeAt(0)); }
     catch (e) { errori.push(String(e.message || e).slice(0, 90)); } // es. 4006: finiti i 10.000 neuroni gratuiti del giorno (condivisi con le altre app)
-    // altri modelli di Cloudflare (rispondono con il PNG già pronto)
-    for (const m of ['@cf/bytedance/stable-diffusion-xl-lightning', '@cf/lykon/dreamshaper-8-lcm']) {
-      try { const r = await env.AI.run(m, { prompt: (piccola ? prompt : stile + prompt).slice(0, 900), num_steps: m.includes('lightning') ? 4 : 8, width: piccola ? 512 : 1024, height: piccola ? 512 : 576 }); const b = r instanceof ReadableStream ? new Uint8Array(await new Response(r).arrayBuffer()) : r instanceof Uint8Array ? r : null; if (b?.length > 1000) return b; errori.push(m.split('/')[2] + ': vuota'); }
-      catch (e) { errori.push(m.split('/')[2] + ': ' + String(e.message || e).slice(0, 60)); }
-    }
   }
   // riserva 1: Hugging Face. Prima lo Space gratuito di FLUX schnell (quota GPU gratuita del tuo account,
   // come fa KindredNest), poi i fornitori a crediti del router se un giorno ce ne saranno.
