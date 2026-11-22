@@ -438,7 +438,7 @@ export class Tavolo extends DurableObject {
     for (const [id, mm] of Object.entries(membri)) {
       if (mm.ruolo !== 'giocatore') continue;
       const p = await this.get('pg:' + id);
-      if (p) pgs.push({ id, giocatore: mm.nome, nome: p.nome, razza: p.razza, classe: p.classe, livello: p.livello, pf: `${p.pf}/${p.pfMax}`, ca: p.ca, caratteristiche: p.car, condizioni: p.condizioni || [], equipaggiato: (p.equip || []).filter(e => e.indossato).map(e => e.nome), oro: p.oro });
+      if (p) pgs.push({ id, giocatore: mm.nome, nome: p.nome, razza: p.razza, classe: p.classe, livello: p.livello, pf: `${p.pf}/${p.pfMax}`, ca: p.ca, caratteristiche: p.car, condizioni: p.condizioni || [], equipaggiato: (p.equip || []).filter(e => e.indossato).map(e => e.nome + (e.bonus ? ' +' + e.bonus : '')), oro: p.oro, classi: p.classi, talenti: p.talenti, incantesimi: (p.incantesimi || []).map(i => i.nome), aspetto: p.aspetto ? { altezza: p.aspetto.altezza, peso: p.aspetto.peso, corporatura: p.aspetto.corporatura } : undefined });
       else pgs.push({ id, giocatore: mm.nome, nome: '(scheda non ancora creata)' });
     }
     return { c, pgs, diario: diario.slice(-40), memoria, luogo, luoghi };
@@ -449,6 +449,7 @@ export class Tavolo extends DurableObject {
     const regole = c.regole === '3.5' ? 'D&D 3.5 (System Reference Document 3.5)' : 'D&D 5ª edizione (SRD 5.1)';
     const istr = `Sei il Dungeon Master di una partita di Dungeons & Dragons giocata online da amici italiani. Parli in italiano, con voce narrante coinvolgente ma concisa: le tue parole vengono lette ad alta voce.
 Regolamento: ${regole}. Applicalo correttamente (prove, CD, tiri salvezza, attacchi, danni). Ambientazione scelta: ${c.ambientazione}.
+Tieni conto dell'aspetto dei personaggi (altezza, peso, corporatura) quando conta davvero: passaggi stretti, essere notati, sollevare o spingere.
 Ruolo: descrivi scene, interpreta i PNG (dai loro un nome e un modo di parlare riconoscibile), chiedi i tiri di dado quando servono con abilità e CD, applica le conseguenze, mantieni il mondo coerente con la memoria della campagna. Sii proattivo: i PNG agiscono e il mondo va avanti anche senza i giocatori.
 Se il gruppo non è ancora in nessun luogo, fai partire l'avventura con un evento "luogo".
 Se i giocatori stanno solo parlando tra loro fuori dal gioco o non serve il tuo intervento, rispondi con narrazione vuota "".
