@@ -18,6 +18,8 @@ export default {
     if (req.method === 'GET' && url.pathname === '/prova-assistente') return provaAssistente(env);
     const t = url.pathname.match(/^\/tavolo\/([A-Za-z0-9]{6,12})\/ws$/);
     if (req.method === 'GET' && t) return apriTavolo(req, env, t[1]);
+    if (req.method === 'GET' && url.pathname === '/turn') return turn(req, env);
+    if (url.pathname === '/mcp') return mcp(req, env, url);
     const m = url.pathname.match(/^\/r\/([A-Za-z0-9_-]{2,40})$/);
     if (req.method !== 'POST' || !m) return risposta(404, { errore: 'percorso' });
     if (!env.GITHUB_TOKEN) return risposta(500, { errore: 'GITHUB_TOKEN mancante' });
@@ -112,4 +114,49 @@ async function provaAssistente(env) {
   const r = await chiamaGemini(env, { contents: [{ parts: [{ text: 'Rispondi solo: ok' }] }], generationConfig: { temperature: 0 } });
   const testo = r.ok ? ((await r.json()).candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '') : (await r.text()).slice(0, 300);
   return risposta(200, { stato: r.status, ms: Date.now() - t0, modello: r.modello || '-', testo });
+}
+
+
+// Server di inoltro per la voce (Cloudflare Realtime TURN): credenziali brevi per le app.
+// Segreti facoltativi: TURN_KEY_ID e TURN_API_TOKEN. Senza, l'app usa solo STUN.
+async function turn(req, env) {
+  const stun = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] }];
+  if (!['https://vincenzociriello91-hub.github.io', 'http://localhost:8765'].includes(req.headers.get('Origin') || '')) return risposta(403, { errore: 'origine' });
+  if (!env.TURN_KEY_ID || !env.TURN_API_TOKEN) return risposta(200, { iceServers: stun, turn: false });
+  const r = await fetch(`https://rtc.live.cloudflare.com/v1/turn/keys/${env.TURN_KEY_ID}/credentials/generate-ice-servers`, { method: 'POST', headers: { Authorization: `Bearer ${env.TURN_API_TOKEN}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ ttl: 86400 }) });
+  if (!r.ok) return risposta(200, { iceServers: stun, turn: false, stato: r.status });
+  const j = await r.json();
+  return risposta(200, { iceServers: [...stun, ...(Array.isArray(j.iceServers) ? j.iceServers : [j.iceServers])], turn: true });
+}
+
+// Connettore "D&D" per Claude (MCP su HTTP): legge le campagne e aiuta a preparare le sessioni.
+// Segreto MCP_CHIAVE: l'indirizzo del connettore è /mcp?chiave=<MCP_CHIAVE>
+const STRUMENTI = [
+  { name: 'stato_campagna', description: "Stato di una campagna di Tavolo d'Avventura: membri, personaggi, luoghi, memoria del master, fazioni, tesoro, uso dell'AI, suggerimenti.", inputSchema: { type: 'object', properties: { codice: { type: 'string', description: 'Codice della campagna (8 caratteri)' } }, required: ['codice'] } },
+  { name: 'diario_campagna', description: 'Ultimi eventi del diario della campagna.', inputSchema: { type: 'object', properties: { codice: { type: 'string' }, n: { type: 'number', description: 'Quanti eventi (max 200)' } }, required: ['codice'] } },
+  { name: 'nota_preparazione', description: 'Aggiunge una nota di preparazione alla memoria del master AI (trame, PNG, segreti per la prossima sessione).', inputSchema: { type: 'object', properties: { codice: { type: 'string' }, testo: { type: 'string' } }, required: ['codice', 'testo'] } },
+  { name: 'prepara_luogo', description: 'Crea in anticipo un luogo con la sua mappa (citta, villaggio, taverna, dungeon, foresta, grotta, castello, porto, aperto).', inputSchema: { type: 'object', properties: { codice: { type: 'string' }, nome: { type: 'string' }, tipo: { type: 'string' } }, required: ['codice', 'nome'] } },
+  { name: 'imposta_fazione', description: 'Crea o aggiorna una fazione e la reputazione del gruppo con essa.', inputSchema: { type: 'object', properties: { codice: { type: 'string' }, nome: { type: 'string' }, descrizione: { type: 'string' }, delta: { type: 'number' }, motivo: { type: 'string' } }, required: ['codice', 'nome'] } }
+];
+async function mcp(req, env, url) {
+  if (!env.MCP_CHIAVE) return risposta(503, { errore: 'connettore non attivo: manca MCP_CHIAVE' });
+  if (url.searchParams.get('chiave') !== env.MCP_CHIAVE) return risposta(401, { errore: 'chiave' });
+  if (req.method !== 'POST') return new Response(null, { status: 405, headers: { Allow: 'POST' } });
+  let m; try { m = await req.json(); } catch { return risposta(400, { errore: 'JSON' }); }
+  const ok = result => new Response(JSON.stringify({ jsonrpc: '2.0', id: m.id, result }), { headers: { 'Content-Type': 'application/json' } });
+  if (m.method === 'initialize') return ok({ protocolVersion: m.params?.protocolVersion || '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'tavolo-davventura', version: '1.0.0' } });
+  if (m.method?.startsWith('notifications/')) return new Response(null, { status: 202 });
+  if (m.method === 'ping') return ok({});
+  if (m.method === 'tools/list') return ok({ tools: STRUMENTI });
+  if (m.method === 'tools/call') {
+    const a = m.params?.arguments || {}, nome = m.params?.name;
+    const codice = String(a.codice || '').toUpperCase();
+    if (!/^[A-Z0-9]{6,12}$/.test(codice)) return ok({ content: [{ type: 'text', text: 'Codice campagna non valido' }], isError: true });
+    const azione = { stato_campagna: 'stato', diario_campagna: 'diario', nota_preparazione: 'nota', prepara_luogo: 'prepara_luogo', imposta_fazione: 'fazione' }[nome];
+    if (!azione) return ok({ content: [{ type: 'text', text: 'Strumento sconosciuto' }], isError: true });
+    const stub = env.TAVOLO.get(env.TAVOLO.idFromName(codice));
+    const r = await stub.fetch('https://tavolo/interno', { method: 'POST', headers: { 'x-tavolo-interno': '1' }, body: JSON.stringify({ azione, ...a }) });
+    return ok({ content: [{ type: 'text', text: JSON.stringify(await r.json(), null, 1).slice(0, 60000) }] });
+  }
+  return new Response(JSON.stringify({ jsonrpc: '2.0', id: m.id, error: { code: -32601, message: 'metodo sconosciuto' } }), { headers: { 'Content-Type': 'application/json' } });
 }

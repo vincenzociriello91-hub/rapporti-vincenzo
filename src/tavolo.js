@@ -22,11 +22,30 @@ const COLORI = ['#e8b04b', '#5b8fd9', '#c97bd0', '#6cc08a', '#e2735f', '#4fc3c8'
 
 export class Tavolo extends DurableObject {
   async fetch(req) {
+    if (req.method === 'POST' && req.headers.get('x-tavolo-interno') === '1') return this.interno(await req.json());
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
     this.ctx.acceptWebSocket(server);
     server.serializeAttachment({ membro: null });
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  // ---------- connettore per Claude: lettura dello stato e preparazione delle sessioni ----------
+  async interno(m) {
+    const ris = o => new Response(JSON.stringify(o), { headers: { 'Content-Type': 'application/json' } });
+    const c = await this.get('campagna');
+    if (!c) return ris({ errore: 'campagna inesistente' });
+    if (m.azione === 'stato') {
+      const membri = await this.get('membri', {}); const pg = [];
+      for (const [id, mm] of Object.entries(membri)) { const p = await this.get('pg:' + id); pg.push({ giocatore: mm.nome, ruolo: mm.ruolo, personaggio: p ? `${p.nome}, ${p.razza} ${(p.classi || [{ classe: p.classe, livello: p.livello }]).map(x => x.classe + ' ' + x.livello).join('/')}, PF ${p.pf}/${p.pfMax}, CA ${p.ca}` : null }); }
+      const attuale = await this.get('luogoAttuale');
+      return ris({ campagna: c, membri: pg, luogo_attuale: attuale ? (await this.get('luogo:' + attuale))?.nome : null, luoghi: Object.values(await this.get('luoghi', {})).map(l => l.nome), memoria: await this.get('memoria', ''), mondo: await this.get('mondo', {}), tesoro: await this.get('gruppo', null), costi: await this.get('costi', null), suggerimenti: (await this.get('suggerimenti', [])).slice(-20), online: this.online().length });
+    }
+    if (m.azione === 'diario') return ris((await this.get('diario', [])).slice(-Math.min(200, m.n || 50)).map(d => `${new Date(d.t).toISOString().slice(0, 16)} [${d.tipo}] ${d.testo}`));
+    if (m.azione === 'nota') { const mem = await this.get('memoria', ''); await this.put('memoria', testo(`${mem}\nNote di preparazione del master: ${testo(m.testo, 1500)}`, 7000)); return ris({ ok: true }); }
+    if (m.azione === 'prepara_luogo') { const id = chiaveLuogo(testo(m.nome, 60)); if (!await this.get('luogo:' + id)) { const l = generaLuogo(testo(m.nome, 60), m.tipo || indovinaTipo(m.nome), c.creata + ':' + id); await this.put('luogo:' + id, l); const idx = await this.get('luoghi', {}); idx[id] = { nome: l.nome, tipo: l.tipo, prima: Date.now() }; await this.put('luoghi', idx); } return ris({ ok: true, luogo: m.nome }); }
+    if (m.azione === 'fazione') { await this.applicaEvento({ tipo: 'fazione', nome: m.nome, descrizione: m.descrizione }); if (m.delta) await this.applicaEvento({ tipo: 'reputazione', fazione: m.nome, delta: m.delta, motivo: m.motivo }); return ris({ ok: true }); }
+    return ris({ errore: 'azione sconosciuta' });
   }
 
   // ---------- utilità di stato ----------
@@ -400,7 +419,8 @@ export class Tavolo extends DurableObject {
 
   // ---------- uso dell'AI: chiamate e token per sessione (pannello costi) ----------
   async g(corpo, compito = 'master') {
-    const r = await chiamaGemini(this.env, corpo);
+    const leggero = ['comandi', 'regole', 'riassunto', 'memoria', 'interni'].includes(compito);
+    const r = compito === 'master' && this.env.ANTHROPIC_KEY ? await chiamaClaude(this.env, corpo).then(x => x.ok ? x : chiamaGemini(this.env, corpo)) : await chiamaGemini(this.env, corpo, leggero);
     if (r.ok) {
       try {
         const u = (await r.clone().json()).usageMetadata || {};
@@ -656,9 +676,10 @@ Rispondi SOLO JSON: {"notizie":"testo di massimo 80 parole da leggere ad alta vo
 }
 
 // ---------- Gemini (modelli in fila: se uno è sovraccarico si passa al successivo) ----------
-async function chiamaGemini(env, corpo) {
+async function chiamaGemini(env, corpo, leggero) {
   if (!env.GEMINI_KEY) return { ok: false, status: 503 };
-  const modelli = [...new Set([env.GEMINI_MODEL || 'gemini-flash-latest', 'gemini-2.5-flash', 'gemini-flash-lite-latest', 'gemini-2.5-flash-lite'])];
+  // maestro: modello migliore; allievo (compiti leggeri): Flash-Lite, più veloce e con più quota gratuita
+  const modelli = leggero ? ['gemini-flash-lite-latest', 'gemini-2.5-flash-lite', 'gemini-flash-latest', 'gemini-2.5-flash'] : [...new Set([env.GEMINI_MODEL || 'gemini-flash-latest', 'gemini-2.5-flash', 'gemini-flash-lite-latest', 'gemini-2.5-flash-lite'])];
   let r;
   for (const modello of modelli) {
     const url = `${env.GEMINI_BASE || 'https://generativelanguage.googleapis.com'}/v1beta/models/${encodeURIComponent(modello)}:generateContent?key=${encodeURIComponent(env.GEMINI_KEY)}`;
@@ -674,6 +695,21 @@ function stagione() {
   const d = new Date(), m = d.getUTCMonth() + 1, g = d.getUTCDate();
   const ev = (m === 10 && g >= 20) || (m === 11 && g <= 2) ? 'notte delle ombre (Halloween): spiriti, maschere, zucche intagliate' : m === 12 || (m === 1 && g <= 6) ? 'feste d\'inverno (Natale): neve, luci, doni, banchetti' : m === 2 ? 'carnevale: maschere, scherzi, feste in piazza' : m === 8 && g >= 10 && g <= 20 ? 'Ferragosto: fiere d\'estate e caldo torrido' : null;
   return { mese: m, stagione: m <= 2 || m === 12 ? 'inverno' : m <= 5 ? 'primavera' : m <= 8 ? 'estate' : 'autunno', evento: ev };
+}
+// Maestro con Claude (facoltativo: solo se è impostato il segreto ANTHROPIC_KEY). Risponde nello stesso formato di Gemini.
+async function chiamaClaude(env, corpo) {
+  try {
+    const sistema = corpo.systemInstruction?.parts?.map(p => p.text).join('\n') || '';
+    const utente = corpo.contents?.map(c => c.parts.map(p => p.text || '').join('\n')).join('\n') || '';
+    const r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'x-api-key': env.ANTHROPIC_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' }, body: JSON.stringify({ model: env.CLAUDE_MODEL || 'claude-sonnet-5-5', max_tokens: 1200, system: sistema + '\nRispondi solo con il JSON richiesto.', messages: [{ role: 'user', content: utente }] }) });
+    if (!r.ok) return { ok: false, status: r.status };
+    const j = await r.json();
+    const testoR = j.content?.map(c => c.text || '').join('') || '';
+    const finto = { candidates: [{ content: { parts: [{ text: testoR }] } }], usageMetadata: { promptTokenCount: j.usage?.input_tokens || 0, candidatesTokenCount: j.usage?.output_tokens || 0 } };
+    const risposta = { ok: true, status: 200, modello: j.model || 'claude', json: async () => finto };
+    risposta.clone = () => risposta;
+    return risposta;
+  } catch { return { ok: false, status: 502 }; }
 }
 function leggiJSON(t) { try { return JSON.parse(t); } catch {} try { return JSON.parse(t.match(/\{[\s\S]*\}/)[0]); } catch { return null; } }
 
