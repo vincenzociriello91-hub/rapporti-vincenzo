@@ -1209,13 +1209,26 @@ export async function generaImmagine(env, prompt, piccola) {
     try { const r = await env.AI.run('@cf/black-forest-labs/flux-1-schnell', { prompt: piccola ? prompt : stile + prompt, steps: piccola ? 4 : 6 }); if (r?.image) return Uint8Array.from(atob(r.image), c => c.charCodeAt(0)); }
     catch (e) { errori.push(String(e.message || e).slice(0, 90)); } // es. 4006: finiti i 10.000 neuroni gratuiti del giorno (condivisi con le altre app)
   }
-  // riserva 1: Hugging Face (chiave HF_TOKEN, crediti gratuiti del mese), come in KindredNest
+  // riserva 1: Hugging Face (chiave HF_TOKEN, crediti gratuiti del mese): più fornitori, il primo che risponde
   if (env.HF_TOKEN) {
-    try {
-      const r = await fetch('https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell', { method: 'POST', headers: { Authorization: `Bearer ${env.HF_TOKEN}`, 'Content-Type': 'application/json', Accept: 'image/jpeg' }, body: JSON.stringify({ inputs: (piccola ? '' : stile) + prompt, parameters: { num_inference_steps: 4, width: piccola ? 512 : 768, height: piccola ? 512 : 768 } }), signal: AbortSignal.timeout(60000) });
-      if (r.ok && /^image\//.test(r.headers.get('content-type') || '')) return new Uint8Array(await r.arrayBuffer());
-      errori.push('Hugging Face ' + r.status + ' ' + (await r.text()).slice(0, 120));
-    } catch (e) { errori.push('Hugging Face ' + (e.message || e)); }
+    const testoHF = (piccola ? '' : stile) + prompt, lato = piccola ? 512 : 768, auth = { Authorization: `Bearer ${env.HF_TOKEN}`, 'Content-Type': 'application/json' };
+    const FORNITORI = [
+      ['nebius', 'https://router.huggingface.co/nebius/v1/images/generations', { model: 'black-forest-labs/flux-schnell', prompt: testoHF, response_format: 'b64_json', width: lato, height: lato }],
+      ['together', 'https://router.huggingface.co/together/v1/images/generations', { model: 'black-forest-labs/FLUX.1-schnell', prompt: testoHF, response_format: 'b64_json', width: lato, height: lato, steps: 4 }],
+      ['fal', 'https://router.huggingface.co/fal-ai/fal-ai/flux/schnell', { prompt: testoHF, image_size: piccola ? 'square' : 'square_hd', num_inference_steps: 4 }],
+      ['hf-sdxl', 'https://router.huggingface.co/hf-inference/models/stabilityai/stable-diffusion-xl-base-1.0', { inputs: testoHF }]
+    ];
+    for (const [nome, url, corpo] of FORNITORI) {
+      try {
+        const r = await fetch(url, { method: 'POST', headers: auth, body: JSON.stringify(corpo), signal: AbortSignal.timeout(60000) });
+        if (!r.ok) { errori.push(`HF ${nome} ${r.status} ${(await r.text()).slice(0, 80)}`); continue; }
+        if (/^image\//.test(r.headers.get('content-type') || '')) return new Uint8Array(await r.arrayBuffer());
+        const j = await r.json(), b64 = j.data?.[0]?.b64_json, link = j.data?.[0]?.url || j.images?.[0]?.url;
+        if (b64) return Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+        if (link) { const im = await fetch(link); if (im.ok) return new Uint8Array(await im.arrayBuffer()); }
+        errori.push(`HF ${nome}: risposta senza immagine`);
+      } catch (e) { errori.push(`HF ${nome} ${String(e.message || e).slice(0, 60)}`); }
+    }
   }
   // riserva 2: i modelli immagine di Gemini, con la sua quota separata
   for (const modello of env.GEMINI_KEY ? ['gemini-2.5-flash-image', 'gemini-3.1-flash-image'] : []) {
