@@ -110,7 +110,7 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
     if (q.giorno !== oggi) { q.giorno = oggi; q.n = 0; }
     if (q.n >= max) return null;
     q.n++; await this.put(quotaChiave, q);
-    const jpeg = await generaImmagine(this.env, prompt, true);
+    const jpeg = await generaImmagine(this.env, prompt, true).catch(() => null);
     if (!jpeg) return null;
     const id = 'i' + Date.now().toString(36) + Math.floor(Math.random() * 100);
     await this.ctx.storage.put('img:' + id, jpeg);
@@ -1181,9 +1181,22 @@ export function nomeMostro(n) { return testo(n, 40).toLowerCase().replace(/[^a-z
 export async function generaImmagine(env, prompt, piccola) {
   const stile = 'Realistic cinematic fantasy illustration, Dungeons and Dragons, dramatic volumetric lighting, highly detailed, painterly realism, no text, no watermark. ';
   if (env.IMG_FINTA) return Uint8Array.from(atob('/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/yQALCAABAAEBAREA/8wABgAQEAX/2gAIAQEAAD8A0s8g/9k='), c => c.charCodeAt(0));
-  if (!env.AI) return null;
-  const r = await env.AI.run('@cf/black-forest-labs/flux-1-schnell', { prompt: piccola ? prompt : stile + prompt, steps: piccola ? 4 : 6 });
-  return r?.image ? Uint8Array.from(atob(r.image), c => c.charCodeAt(0)) : null;
+  let errore = null;
+  if (env.AI) {
+    try { const r = await env.AI.run('@cf/black-forest-labs/flux-1-schnell', { prompt: piccola ? prompt : stile + prompt, steps: piccola ? 4 : 6 }); if (r?.image) return Uint8Array.from(atob(r.image), c => c.charCodeAt(0)); }
+    catch (e) { errore = e; } // es. 4006: finiti i 10.000 neuroni gratuiti del giorno (condivisi con le altre app)
+  }
+  // riserva: i modelli immagine di Gemini, con la sua quota separata
+  for (const modello of env.GEMINI_KEY ? ['gemini-2.5-flash-image', 'gemini-3.1-flash-image'] : []) {
+    try {
+      const r = await fetch(`${env.GEMINI_BASE || 'https://generativelanguage.googleapis.com'}/v1beta/models/${modello}:generateContent?key=${encodeURIComponent(env.GEMINI_KEY)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: (piccola ? '' : stile) + prompt + (piccola ? '' : ' Square image.') }] }], generationConfig: { responseModalities: ['IMAGE'] } }), signal: AbortSignal.timeout(60000) });
+      if (!r.ok) { errore = new Error(`${modello} ${r.status}`); continue; }
+      const dati = (await r.json()).candidates?.[0]?.content?.parts?.find(p => p.inlineData)?.inlineData?.data;
+      if (dati) return Uint8Array.from(atob(dati), c => c.charCodeAt(0));
+    } catch (e) { errore = e; }
+  }
+  if (errore) throw errore;
+  return null;
 }
 // Eventi stagionali del mondo reale: il master li intreccia nella storia se ha senso
 function stagione() {
