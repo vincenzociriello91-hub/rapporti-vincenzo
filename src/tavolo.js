@@ -89,7 +89,7 @@ export class Tavolo extends DurableObject {
       await this.put('diario', d);
       this.tutti({ t: 'diario', ev: d[d.length - 1] });
       return id;
-    } catch (e) { this.erroreImg = String(e?.message || e).slice(0, 160); console.error('illustra', this.erroreImg); return null; }
+    } catch (e) { this.erroreImg = String(e?.message || e).slice(0, 700); console.error('illustra', this.erroreImg); return null; }
   }
   // ---------- riepilogo illustrato di fine sessione ----------
   async riepilogo() {
