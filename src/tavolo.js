@@ -49,13 +49,14 @@ export class Tavolo extends DurableObject {
   }
 
   // ---------- illustrazioni realistiche delle scene (Workers AI, quota gratuita giornaliera) ----------
-  async illustra(prompt, didascalia, forza) {
+  async illustra(prompt, didascalia, forza, vera) {
     try {
       const oggi = new Date().toISOString().slice(0, 10), q = await this.get('quotaImmagini', { giorno: oggi, n: 0, ultima: 0 });
       if (q.giorno !== oggi) { q.giorno = oggi; q.n = 0; }
       if (q.n >= 40 || (!forza && Date.now() - q.ultima < 120000)) return null; // al massimo 40 al giorno, una ogni 2 minuti
       q.n++; q.ultima = Date.now(); await this.put('quotaImmagini', q);
-      const jpeg = await generaImmagine(this.env, prompt);
+      const prova = (await this.get('campagna'))?.prova; // partita bot: non consuma i crediti gratuiti delle immagini
+      const jpeg = await generaImmagine(prova && !vera ? { ...this.env, IMG_FINTA: 1 } : this.env, prompt, prova);
       if (!jpeg) return null;
       const id = 'i' + Date.now().toString(36);
       await this.ctx.storage.put('img:' + id, jpeg);
@@ -110,7 +111,7 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
     if (q.giorno !== oggi) { q.giorno = oggi; q.n = 0; }
     if (q.n >= max) return null;
     q.n++; await this.put(quotaChiave, q);
-    const jpeg = await generaImmagine(this.env, prompt, true).catch(() => null);
+    const jpeg = await generaImmagine((await this.get('campagna'))?.prova ? { ...this.env, IMG_FINTA: 1 } : this.env, prompt, true).catch(() => null);
     if (!jpeg) return null;
     const id = 'i' + Date.now().toString(36) + Math.floor(Math.random() * 100);
     await this.ctx.storage.put('img:' + id, jpeg);
@@ -294,7 +295,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     const t = r.ok ? (await r.json()).candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '' : '';
     // se Gemini non risponde si disegna comunque il luogo, senza lasciare il gruppo ad aspettare
     const prompt = t.match(/PROMPT:\s*(.+)/i)?.[1] || `Detailed fantasy D&D illustration of ${luogo?.nome || 'an adventuring party'} (${luogo?.tipo || 'tavern'}), cinematic lighting, painterly, atmospheric`, did = t.match(/DIDASCALIA:\s*(.+)/i)?.[1];
-    const ok = await this.illustra(prompt, did || luogo?.nome || 'La scena', forza);
+    const ok = await this.illustra(prompt, did || luogo?.nome || 'La scena', forza, forza);
     if (!ok && forza) this.tutti({ t: 'avviso', msg: "L'illustrazione non è riuscita (servizio immagini occupato o quota del giorno finita): riprova tra poco", motivo: this.erroreImg || null });
   }
 
@@ -442,6 +443,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
           const seg = await this.get('segnalini', {}); delete seg[chi]; await this.put('segnalini', seg);
           const ev = await this.diario('sistema', `${nome} lascia la campagna.`);
           for (const s2 of this.ctx.getWebSockets()) { const x = this.membroDi(s2); if (x === chi) { s2.serializeAttachment({ membro: null }); try { s2.close(1000, 'uscito'); } catch {} } }
+          if (!Object.keys(membri).length && (await this.get('campagna'))?.prova) { await this.ctx.storage.deleteAlarm(); await this.ctx.storage.deleteAll(); return; } // partita bot finita: niente resta sul server
           for (const s2 of this.ctx.getWebSockets()) { const x = this.membroDi(s2); if (x) { this.invia(s2, { t: 'stato', stato: await this.statoCompleto(x) }); this.invia(s2, { t: 'diario', ev }); } }
           return;
         }
@@ -478,7 +480,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     const campagna = {
       nome: testo(m.nome, 60) || 'Nuova campagna', regole: m.regole === '3.5' ? '3.5' : '5e',
       ambientazione: testo(m.ambientazione, 400) || 'Fantasy classico', masterTipo: m.masterTipo === 'umano' ? 'umano' : 'ai',
-      invito: codiceCasuale(8), creata: Date.now(), sessione: 1, solitaria: !!m.solitaria
+      invito: codiceCasuale(8), creata: Date.now(), sessione: 1, solitaria: !!m.solitaria, prova: !!m.prova
     };
     await this.put('campagna', campagna);
     if (AVVENTURE[m.avventura]) await this.put('avventura', { id: m.avventura, scena: 0, iniziata: false });
@@ -1050,12 +1052,15 @@ Rispondi SOLO JSON: {"notizie":"testo di massimo 80 parole da leggere ad alta vo
 }
 
 // ---------- Gemini (modelli in fila: se uno è sovraccarico si passa al successivo) ----------
+// per 10 minuti si riparte dall'ultimo modello che ha risposto (gli altri possono essere esauriti o lenti)
+const BUONI = {};
 async function chiamaGemini(env, corpo, leggero) {
   if (!env.GEMINI_KEY) return { ok: false, status: 503 };
   // maestro: modello migliore; allievo (compiti leggeri): Flash-Lite, più veloce e con più quota gratuita
   // ogni modello ha la sua quota gratuita: se uno è esaurito (429) o ritirato (404) si passa al successivo
   const LITE = ['gemini-flash-lite-latest', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-2.5-flash-lite'], FLASH = ['gemini-flash-latest', 'gemini-3.5-flash', 'gemini-3-flash-preview', 'gemini-2.5-flash'];
-  const modelli = [...new Set(leggero ? [...LITE, ...FLASH] : [env.GEMINI_MODEL || 'gemini-flash-latest', ...FLASH, ...LITE])];
+  const buono = BUONI[leggero ? 'lite' : 'pieno'], recente = buono && Date.now() - buono.t < 600000 ? [buono.modello] : [];
+  const modelli = [...new Set(leggero ? [...recente, ...LITE, ...FLASH] : [...recente, env.GEMINI_MODEL || 'gemini-flash-latest', ...FLASH, ...LITE])];
   let r, peggiore = null; const inizio = Date.now(), tentativi = [];
   for (const modello of modelli) {
     const url = `${env.GEMINI_BASE || 'https://generativelanguage.googleapis.com'}/v1beta/models/${encodeURIComponent(modello)}:generateContent?key=${encodeURIComponent(env.GEMINI_KEY)}`;
@@ -1066,7 +1071,7 @@ async function chiamaGemini(env, corpo, leggero) {
     // Gemini 3 non accetta thinkingBudget 0: si prova il ragionamento minimo prima di quello pieno (lento, ~24 s per turno)
     if (r.status === 400) r = await invia({ ...corpo, generationConfig: { ...corpo.generationConfig, thinkingConfig: { thinkingLevel: 'minimal' } } });
     if (r.status === 400) r = await invia(corpo);
-    if (![404, 429, 500, 502, 503, 504, 524].includes(r.status)) { r.modello = modello; r.tentativi = tentativi; return r; }
+    if (![404, 429, 500, 502, 503, 504, 524].includes(r.status)) { r.modello = modello; r.tentativi = tentativi; if (r.ok) BUONI[leggero ? 'lite' : 'pieno'] = { modello, t: Date.now() }; return r; }
     if (r.status !== 404) peggiore = r; // un 404 (modello ritirato) non deve nascondere la quota finita
   }
   return peggiore || r;
