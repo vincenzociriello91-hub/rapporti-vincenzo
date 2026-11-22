@@ -20,7 +20,25 @@ const RARI = [{ nome: 'Pozione di guarigione superiore', prezzo: 150 }, { nome: 
 const SEGRETI = ['Sei in cerca di un fratello scomparso: chiedi di lui a ogni PNG importante.', 'Devi una grossa somma a un usuraio: metti da parte 200 monete senza dirlo agli altri.', 'Sei stato cacciato dalla tua gilda: riconquista il loro rispetto con un\'impresa.', 'Hai giurato di proteggere un compagno del gruppo, anche a costo della vita.', 'Colleziona un trofeo da ogni nemico importante sconfitto.', 'Un antico spirito ti parla in sogno: segui i suoi segni.', 'Vuoi diventare famoso: fai in modo che il tuo nome arrivi in ogni città.', 'Cerchi la spada di tuo nonno, perduta in un dungeon della regione.'];
 // il testo da leggere ad alta voce: via le indicazioni di regia "*(tono epico)*", asterischi e titoli markdown
 export function senzaRegia(t) { return String(t ?? '').replace(/\*?\((?:tono|voce|con tono|musica|pausa|sottofondo)[^)]*\)\*?/gi, '').replace(/[*_#`]+/g, '').replace(/[ \t]{2,}/g, ' ').trim(); }
-const TIPI_EVENTO = ['avventura', 'bottino', 'combattimento', 'compagno', 'condizione', 'cura', 'danno', 'danno_nemico', 'edificio', 'enigma', 'esperienza', 'fazione', 'illustra', 'luogo', 'minaccia', 'minaccia_sventata', 'missione', 'missione_fatta', 'morte', 'negozio', 'nemesi', 'nemesi_fuga', 'nemico', 'oggetto', 'oro', 'png', 'png_nota', 'reputazione', 'reputazione_luogo', 'scelta', 'scena', 'segreto_fatto', 'sfida_persa', 'sfida_vinta', 'sogno', 'suono', 'tempo', 'tiro', 'valuta', 'valuta_pg', 'voto']; // gli eventi che il master AI può usare (quelli di applicaEvento)
+const TIPI_EVENTO = ['png_ricordo', 'avventura', 'bottino', 'combattimento', 'compagno', 'condizione', 'cura', 'danno', 'danno_nemico', 'edificio', 'enigma', 'esperienza', 'fazione', 'illustra', 'luogo', 'minaccia', 'minaccia_sventata', 'missione', 'missione_fatta', 'morte', 'negozio', 'nemesi', 'nemesi_fuga', 'nemico', 'oggetto', 'oro', 'png', 'png_nota', 'reputazione', 'reputazione_luogo', 'scelta', 'scena', 'segreto_fatto', 'sfida_persa', 'sfida_vinta', 'sogno', 'suono', 'tempo', 'tiro', 'valuta', 'valuta_pg', 'voto']; // gli eventi che il master AI può usare (quelli di applicaEvento)
+const TATTICHE = { fuoco: /fuoco|fiamm|incendi|brucio|palla di fuoco/i, ghiaccio: /ghiacci|gelo|congel/i, frecce: /frecc|arco|balestr|tiro da lontano/i, furtivita: /furtiv|nascond|di soppiatto|silenzio|alle spalle/i, magia: /incantesim|lancio|magia|dardo incantato/i, mischia: /spad|ascia|martell|carico|colpisco|attacco corpo/i, trappole: /trappol|imbosc/i, parlare: /convinc|persuad|minacci|ingann|tratt/i, fuga: /scapp|fuggo|ritirat|corro via/i };
+const RISERVA = {
+  scena: {
+    taverna: ['Il fuoco scoppietta nel camino e qualcuno ride a un tavolo lontano.', 'Un boccale cade e rotola sotto il bancone.', 'Dalla cucina arriva odore di stufato e cipolle.', 'Un bardo stanco accorda il liuto in un angolo.'],
+    citta: ['La folla si apre per lasciar passare un carro carico di botti.', 'Un banditore grida una notizia che nessuno ascolta.', 'Le campane suonano l\'ora dal campanile.', 'Due guardie discutono a voce alta all\'angolo della strada.'],
+    villaggio: ['Un cane abbaia a qualcosa che solo lui vede.', 'Una donna stende i panni e vi guarda di sbieco.', 'Il vento porta odore di fieno e di fumo.', 'Un bambino corre via ridendo con una gallina in braccio.'],
+    dungeon: ['Una goccia cade nel buio, e poi un\'altra.', 'In lontananza qualcosa graffia la pietra.', 'La torcia trema come se passasse un soffio d\'aria.', 'Sul pavimento, impronte che non sono vostre.'],
+    grotta: ['L\'eco dei vostri passi torna indietro un attimo troppo tardi.', 'Un pipistrello sfreccia sopra le vostre teste.', 'L\'acqua gocciola su una pozza nera.'],
+    foresta: ['Un ramo si spezza tra gli alberi, poi silenzio.', 'Gli uccelli smettono di cantare tutti insieme.', 'Tra le foglie vedete per un attimo due occhi gialli.'],
+    castello: ['Uno stendardo sbatte nel vento sopra le mura.', 'Passi pesanti di soldati risuonano su una scala.', 'Una porta si chiude da qualche parte, lontano.'],
+    porto: ['I gabbiani litigano su un mucchio di reti.', 'Una nave attracca tra grida e cigolii di corde.', 'L\'odore di sale e pesce vi riempie il naso.'],
+    interno: ['Le assi del pavimento scricchiolano sotto i vostri piedi.', 'Una candela si spegne da sola.', 'Da dietro una porta arriva un sussurro.'],
+    aperto: ['Il vento piega l\'erba alta lungo la strada.', 'In lontananza si alza un filo di fumo.', 'Un corvo si posa su un sasso e vi fissa.', 'Nuvole basse corrono veloci nel cielo.']
+  },
+  png: ['vi guarda e fa un cenno col capo.', 'si avvicina e chiede se avete bisogno di qualcosa.', 'borbotta qualcosa sul tempo e sulle tasse.', 'sembra voler dire qualcosa, poi ci ripensa.', 'vi saluta come se vi conoscesse da sempre.'],
+  invito: ['Cosa fate?', 'Che cosa decidete di fare?', 'Come vi muovete adesso?', 'Chi di voi fa la prima mossa?', 'Ditemi cosa fa ognuno di voi.'],
+  silenzio: ['Il momento sembra aspettare una vostra decisione.', 'Qualcosa sta per succedere, se nessuno si muove.', 'Il tempo passa: cosa fate?']
+};
 const SILENZIO = 4 * 60000; // dopo quanti minuti di silenzio il master AI fa succedere qualcosa
 const REAZIONI = ['👏', '😂', '😱', '🔥', '❤️', '🎲'];
 const LINGUE = { it: 'italiano', en: 'inglese', es: 'spagnolo', fr: 'francese', de: 'tedesco' };
@@ -241,6 +259,42 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
     if (!prima || !dopo || prima.pf === dopo.pf) return;
     const d = (dopo.pf || 0) - (prima.pf || 0);
     await this.conta(id, d < 0 ? { danniSubiti: -d, ...(prima.pf > 0 && dopo.pf <= 0 ? { cadute: 1 } : {}) } : { cure: d });
+  }
+  // ---------- battute di riserva (come i Dialoghi dei Varchi): senza intelligenza artificiale, mai due volte uguali ----------
+  async battutaDiRiserva(luogo, silenzio) {
+    const png = await this.get('png', {}), qui = Object.entries(png).filter(([, p]) => p.luogo && p.luogo === luogo?.nome).map(([n]) => n);
+    const tipo = luogo?.tipo || 'aperto', usate = await this.get('riserveUsate', []);
+    const R = a => a[Math.floor(Math.random() * a.length)];
+    let frase = '';
+    for (let k = 0; k < 12; k++) {
+      const scena = R(RISERVA.scena[tipo] || RISERVA.scena.aperto), invito = R(silenzio ? RISERVA.silenzio : RISERVA.invito), chi = qui.length && Math.random() < 0.6 ? R(qui) : null;
+      frase = chi ? `${scena} ${chi} ${R(RISERVA.png)} ${invito}` : `${scena} ${invito}`;
+      if (!usate.includes(frase)) break;
+    }
+    await this.put('riserveUsate', [...usate, frase].slice(-40));
+    const ev = await this.diario('narrazione', frase, 'master');
+    this.tutti({ t: 'narra', testo: ev.testo, png: '', chi: 'master', riserva: true });
+  }
+  // ---------- dungeon del giorno (come i Varchi): una discesa al giorno, ogni giorno più in basso, il custode che vince diventa nemesi ----------
+  async dungeonDelGiorno(io) {
+    const oggi = new Date().toISOString().slice(0, 10), d = await this.get('dungeonGiorno', { livello: 0, giorno: '' });
+    if (d.giorno === oggi) return this.invia(this.wsDi(io), { t: 'errore', msg: 'Oggi siete già scesi: la prossima discesa si apre domani' });
+    d.livello++; d.giorno = oggi;
+    const nomi = ['Cripta di Ossanera', 'Rovine di Valtetra', 'Pozzi di Grimvalle', 'Catacombe del Re Muto', 'Antro delle Mille Voci', 'Segrete di Torrebruna', 'Abisso di Fumoscuro'];
+    const giorno = Math.floor(Date.now() / 86400000), nome = `${nomi[giorno % nomi.length]}, livello ${d.livello}`;
+    const membri = await this.get('membri', {}); let lv = 1; for (const id of Object.keys(membri)) lv = Math.max(lv, (await this.get('pg:' + id))?.livello || 1);
+    const custodi = ['Il Custode d\'Ossa', 'La Sentinella di Pietra', 'Il Signore dei Vermi', 'La Strega del Pozzo', 'Il Cavaliere Senza Volto'];
+    d.custode = custodi[(giorno + d.livello) % custodi.length]; d.luogo = nome;
+    await this.put('dungeonGiorno', d);
+    await this.vai(io, { nome: 'Master' }, nome, 'dungeon');
+    const l = await this.get('luogo:' + await this.get('luogoAttuale')), sala = l?.edifici?.find(e => /boss/i.test(e.nome)) || l?.edifici?.slice(-1)[0];
+    if (sala) await this.applicaEvento({ tipo: 'nemico', nome: d.custode, x: sala.x + Math.floor(sala.w / 2), y: sala.y + Math.floor(sala.h / 2), pf: 20 + lv * 8 + d.livello * 4, ca: 13 + Math.min(5, Math.floor((lv + d.livello) / 3)) });
+    await this.annuncia(`Discesa del giorno: ${nome}. In fondo vi aspetta ${d.custode}. Se vi sconfigge, si ricorderà di voi.`);
+  }
+  // ---------- tattiche del gruppo: i nemici intelligenti e la nemesi si adattano (come i nemici dei Varchi) ----------
+  async notaTattica(frase) {
+    const trovate = Object.entries(TATTICHE).filter(([, re]) => re.test(frase)).map(([k]) => k); if (!trovate.length) return;
+    const t = await this.get('tattiche', {}); for (const k of trovate) t[k] = (t[k] || 0) + 1; await this.put('tattiche', t);
   }
   // ---------- manuale di esperienza del master (come il bot di Minecraft: impara dagli errori, mai due volte lo stesso) ----------
   async manuale(azione, dati = {}) {
@@ -656,13 +710,15 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
         case 'riepiloghi': return this.invia(ws, { t: 'riepiloghi', elenco: await this.get('riepiloghi', []) });
         case 'illustra': if (!capo) return; this.ctx.waitUntil(this.illustraScena(true)); return this.invia(ws, { t: 'avviso', msg: 'Sto disegnando la scena…' });
         case 'modifica_luogo': return this.modificaLuogo(io, me, me.ruolo === 'master', m); // solo il master umano; il master AI cambia lo stato con gli eventi
-        case 'chat': { const ev = await this.diario('chat', m.testo, io); this.tutti({ t: 'diario', ev }); if (m.alMaster) await this.programmaMaster(true); return; }
+        case 'chat': { this.ctx.waitUntil(this.notaTattica(String(m.testo || ''))); const ev = await this.diario('chat', m.testo, io); this.tutti({ t: 'diario', ev }); if (m.alMaster) await this.programmaMaster(true); return; }
         case 'parlato': return this.parlato(io, me, m);
         case 'comando': { const ev = await this.diario('comando', `${me.nome}: ${testo(m.testo, 300)}`, io); return this.tutti({ t: 'diario', ev }); }
         case 'storia': return this.storia(io, m);
         case 'missione_accetta': return this.missioneAccetta(io, String(m.id || ''));
         case 'reazione': { if (!REAZIONI.includes(m.emoji)) return; const ora = Date.now(); if (ora - (this.reazioni.get(io) || 0) < 1200) return; this.reazioni.set(io, ora); return this.tutti({ t: 'reazione', emoji: m.emoji, nome: me.nome }); }
         case 'traduci': return this.traduci(ws, m);
+        case 'meteo_vero': { if (!capo || !['sereno', 'nuvoloso', 'pioggia', 'temporale', 'neve', 'nebbia'].includes(m.meteo)) return; const mo = await this.get('mondo', { fazioni: {}, valute: {}, viaggi: [], notizie: [] }); mo.calendario = { giorno: 1, stagione: 'autunno', ...(mo.calendario || {}), meteo: m.meteo, meteoVero: true }; await this.put('mondo', mo); return this.tutti({ t: 'mondo', mondo: mo }); }
+        case 'dungeon_giorno': if (!capo && (await this.get('campagna')).masterTipo === 'umano') return; return this.dungeonDelGiorno(io);
         case 'segnala_problema': { const ora = Date.now(); if (ora - (this.ultimoProblema || 0) < 3000) return; this.ultimoProblema = ora; return this.impara([], [testo(m.testo, 300)]); }
         case 'immagine_esterna': {
           const att = this.daDisegnare; if (!att || att.id !== m.id || Date.now() - att.t > 180000 || typeof m.dati !== 'string' || m.dati.length > 380000) return;
@@ -1098,6 +1154,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
   async parlato(io, me, m) {
     const frase = testo(m.testo, 600).trim();
     if (!frase) return;
+    this.ctx.waitUntil(this.notaTattica(frase));
     const ev = await this.diario('parlato', `${me.nome}: ${frase}`, io);
     this.tutti({ t: 'diario', ev });
     const c = await this.get('campagna');
@@ -1168,7 +1225,7 @@ Eventi possibili (solo se accadono davvero):
 {"tipo":"illustra","prompt":"English description of the scene for a realistic image, max 60 words, no names","didascalia":"didascalia italiana breve"} (solo nei momenti davvero memorabili: un mostro che appare, un colpo di scena, un luogo spettacolare; al massimo una volta ogni tanto)
 {"tipo":"negozio","nome":"Bottega di Bruna","merci":[{"nome":"Pozione di guarigione","prezzo":50}]} (apre il banco di un mercante: i giocatori comprano e vendono dall'app con le loro monete; prezzi in monete d'oro; {"tipo":"negozio","chiudi":true} quando escono)
 {"tipo":"tiro","pg":"<id>","prova":"Percezione","cd":15}
-{"tipo":"png_nota","nome":"Oste Bruno","nota":"cosa si scopre di lui, max 15 parole"} (per la galleria dei PNG: aspetto, carattere, segreti scoperti dal gruppo; solo cose che il gruppo sa davvero)
+{"tipo":"png_ricordo","nome":"Oste Bruno","ricordo":"cosa ha fatto il gruppo con lui o da lui, max 15 parole"} (memoria del PNG: quando il gruppo torna da lui lo saluta ricordandolo) e {"tipo":"png_nota","nome":"Oste Bruno","nota":"cosa si scopre di lui, max 15 parole"} (per la galleria dei PNG: aspetto, carattere, segreti scoperti dal gruppo; solo cose che il gruppo sa davvero)
 {"tipo":"morte","pg":"<id>","motivo":"..."} (solo quando un personaggio muore davvero secondo le regole: va nel memoriale e il giocatore potrà creare un erede)
 {"tipo":"missione","titolo":"...","descrizione":"...","ricompensa":"..."} (missione secondaria facoltativa sulla bacheca, quando il gruppo è in una taverna, villaggio o città: 1-3 alla volta) e {"tipo":"missione_fatta","titolo":"..."}
 {"tipo":"voto","domanda":"...","opzioni":["...","..."]} (quando il gruppo deve decidere insieme: ognuno vota dal telefono)
@@ -1188,6 +1245,7 @@ Eventi possibili (solo se accadono davvero):
 {"tipo":"bottino","oro":n,"oggetti":["..."]} (va nel tesoro comune del gruppo)
 {"tipo":"fazione","nome":"Gilda dei Ladri","descrizione":"..."} (nuova fazione) e {"tipo":"reputazione","fazione":"...","delta":n,"motivo":"..."} (da -100 a +100: i PNG delle fazioni trattano il gruppo di conseguenza)
 {"tipo":"tempo","giorni":n,"ora":0-23,"stagione":"primavera|estate|autunno|inverno","meteo":"sereno|nuvoloso|pioggia|temporale|neve|nebbia"} (quando passa il tempo o cambia il tempo atmosferico: la mappa mostra luce del giorno, notte, ombre del sole, pioggia, neve e nebbia; tieni coerenti ora e meteo con la narrazione)
+Ogni luogo dove si parla con qualcuno ha il suo PNG con nome e volto (oste, fabbro, sacerdote...): se in png_incontrati c'è già uno con qui=true usa lui e fallo parlare ricordando ricorda_del_gruppo; dopo un'interazione importante salva un png_ricordo. I nemici intelligenti e la nemesi si adattano alle tattiche_del_gruppo più usate (resistenze, coperture, attaccano prima chi lancia incantesimi, imboscate a chi esplora da solo), senza diventare imbattibili.
 Ora e meteo cambiano la partita: di notte i PNG dormono, le botteghe sono chiuse, le guardie sospettose e i mostri più numerosi; con pioggia, nebbia o neve la vista è ridotta (svantaggio alle prove di Percezione basate sulla vista), le tracce si perdono e i viaggi sono più lenti; col temporale i fuochi si spengono e i rumori coprono i passi. Dillo nella narrazione quando conta.
 Il mondo è vivo (vedi "mondo_vivo"): fai tornare la nemesi nei momenti giusti, ricordati delle scelte morali (il finale della campagna dipende da loro), fai crescere le minacce ignorate (livello 1-5: a 5 colpiscono), metti missioni sulla bacheca quando il gruppo è in città, aiuta in segreto ogni personaggio verso il suo obiettivo segreto e ogni tanto manda un sogno privato con un indizio. Se c'è un enigma aperto aspetta la risposta dei giocatori: non dire la soluzione. Se c'è un voto aperto aspetta il risultato. La casa del gruppo e i compagni animali esistono: usali nella storia.
 {"tipo":"valuta","nome":"Corone di Argentea","cambio":0.5} (valuta locale e quanto vale in monete d'oro) e {"tipo":"valuta_pg","pg":"<id>","valuta":"...","quantita":n}
@@ -1210,7 +1268,9 @@ AVVENTURA PRONTA "${AVVENTURE[avv.id].titolo}": seguila (trovi scene, segreti e 
       valute_locali: (await this.get('mondo', {}))?.valute || {},
       relazioni_tra_personaggi: await this.get('relazioni', {}),
       mondo_vivo: await this.mondoVivo(true),
-      png_incontrati: Object.entries(await this.get('png', {})).map(([nome, p]) => ({ nome, luogo: p.luogo, legami: p.legami, cosa_ha_fatto_nel_frattempo: p.novita })),
+      png_incontrati: Object.entries(await this.get('png', {})).map(([nome, p]) => ({ nome, luogo: p.luogo, qui: !!(luogo && p.luogo === luogo.nome), ricorda_del_gruppo: p.ricordi, legami: p.legami, cosa_ha_fatto_nel_frattempo: p.novita })),
+      tattiche_del_gruppo: await this.get('tattiche', {}),
+      dungeon_del_giorno: await this.get('dungeonGiorno', null),
       ultimi_eventi: diario.map(d => `[${d.tipo}] ${d.testo}`)
     };
     const lezioni = await this.lezioniMaster(), silenzio = this.silenzio; this.silenzio = false;
@@ -1220,7 +1280,7 @@ AVVENTURA PRONTA "${AVVENTURE[avv.id].titolo}": seguila (trovi scene, segreti e 
       contents: [{ role: 'user', parts: [{ text: JSON.stringify(contesto) }] }],
       generationConfig: { temperature: 0.85, responseMimeType: 'application/json' }
     });
-    if (!r.ok) { this.tutti({ t: 'errore', msg: r.status === 429 ? 'Il master AI ha finito la quota gratuita di oggi: riprova più tardi o passate al master umano' : `il master AI non risponde (${r.status}), riprova tra poco` }); return; }
+    if (!r.ok) { this.tutti({ t: 'avviso', msg: r.status === 429 ? 'Il master AI ha finito la quota di oggi: intanto il master improvvisa con le battute di riserva' : `Il master AI non risponde (${r.status}): intanto improvviso io`, errore: true }); return this.battutaDiRiserva(luogo, silenzio); }
     const j = await r.json();
     const out = leggiJSON(j.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '');
     if (!out) { await this.impara(['Rispondi sempre e solo con il JSON richiesto (narrazione, png, eventi), senza testo fuori dal JSON.'], []); return; }
@@ -1269,8 +1329,9 @@ AVVENTURA PRONTA "${AVVENTURE[avv.id].titolo}": seguila (trovi scene, segreti e 
       case 'suono': if (SUONI.includes(e.nome)) this.tutti({ t: 'suono', nome: e.nome }); return;
       case 'sfida_vinta': case 'sfida_persa': { const c = await this.get('campagna'); if (!c.sfida || c.sfida.esito) return; c.sfida.esito = e.tipo === 'sfida_vinta' ? 'vinta' : 'persa'; await this.put('campagna', c); await this.annuncia(c.sfida.esito === 'vinta' ? `Sfida della settimana vinta: ${c.sfida.titolo}!` : `Sfida della settimana persa: ${c.sfida.titolo}. Riprova la prossima volta!`); return this.tutti({ t: 'sfida', sfida: c.sfida }); }
       case 'missione': case 'missione_fatta': case 'voto': case 'enigma': case 'nemesi': case 'nemesi_fuga': case 'scelta': case 'sogno': case 'segreto_fatto': case 'minaccia': case 'minaccia_sventata': case 'reputazione_luogo': case 'compagno': return this.eventoMondo(e);
+      case 'png_ricordo': { const png = await this.get('png', {}), n = testo(e.nome, 40); if (!n || !e.ricordo) return; png[n] = { ...png[n], t: png[n]?.t || Date.now(), ricordi: [...(png[n]?.ricordi || []), testo(e.ricordo, 140)].slice(-6) }; await this.put('png', png); return this.tutti({ t: 'png', png }); }
       case 'png_nota': { const png = await this.get('png', {}), n = testo(e.nome, 40); if (!n || !e.nota) return; png[n] = { ...png[n], luogo: png[n]?.luogo || null, t: png[n]?.t || Date.now(), note: [...(png[n]?.note || []), testo(e.nota, 120)].slice(-6) }; await this.put('png', png); return this.tutti({ t: 'png', png }); }
-      case 'morte': return this.caduto(String(e.pg || ''), testo(e.motivo, 200));
+      case 'morte': { const d = await this.get('dungeonGiorno', null), qui = await this.get('luogo:' + await this.get('luogoAttuale')); if (d?.custode && qui?.nome === d.luogo) await this.eventoMondo({ tipo: 'nemesi', nome: d.custode, descrizione: `il custode di ${d.luogo}: ha sconfitto il gruppo e se ne ricorda` }); return this.caduto(String(e.pg || ''), testo(e.motivo, 200)); }
       case 'illustra': this.ctx.waitUntil(e.prompt ? this.illustra(testo(e.prompt, 600), testo(e.didascalia, 200)) : this.illustraScena()); return;
       case 'tiro': { const p = await this.get('pg:' + e.pg); this.tutti({ t: 'richiesta_tiro', pg: e.pg, prova: testo(e.prova, 40), cd: e.cd | 0, nome: p?.nome }); return; }
       case 'reputazione': case 'fazione': {
