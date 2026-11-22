@@ -250,7 +250,7 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
     const seg = await this.get('segnalini', {}), luogo = await this.get('luogo:' + await this.get('luogoAttuale'));
     if (!luogo || !Array.isArray(mostri)) return;
     const pgs = Object.values(seg).filter(x => x.tipo === 'pg'), cx = pgs.length ? Math.round(pgs.reduce((a, x) => a + x.x, 0) / pgs.length) : Math.floor(W / 2), cy = pgs.length ? Math.round(pgs.reduce((a, x) => a + x.y, 0) / pgs.length) : Math.floor(H / 2);
-    const libera = (x, y) => x > 0 && y > 0 && x < W - 1 && y < H - 1 && !'#wRT~'.includes(luogo.celle[y][x]) && !Object.values(seg).some(o => o.x === x && o.y === y) && !(luogo.oggetti || []).some(o => o.x === x && o.y === y);
+    const { blocco } = griglia(luogo), libera = (x, y) => x > 0 && y > 0 && x < luogo.w - 1 && y < luogo.h - 1 && !blocco[y * luogo.w + x] && !Object.values(seg).some(o => o.x === x && o.y === y);
     let k = 0;
     for (const mo of mostri.slice(0, 6)) for (let i = 0; i < Math.min(8, mo.numero || 1); i++) {
       let fatto = false;
@@ -564,23 +564,37 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     const id = String(m.id || io);
     if (id !== io && !capo) return;
     const seg = await this.get('segnalini', {});
+    let via = null;
+    if (!m.rimuovi && seg[id] && seg[id].tipo === 'pg' && (!capo || id === io)) {
+      const luogo = await this.get('luogo:' + await this.get('luogoAttuale'));
+      if (luogo) { via = percorso(luogo, seg[id], { x: m.x | 0, y: m.y | 0 }); if (!via) return this.invia(this.wsDi?.(io), { t: 'segnalini', segnalini: seg }); }
+    }
+    let x = Math.max(0, Math.min(63, m.x | 0)), y = Math.max(0, Math.min(63, m.y | 0));
+    // mostri e PNG piazzati dal master: mai dentro un muro o un mobile, ma nella casella libera più vicina
+    if (!m.rimuovi && capo && !via && (m.tipo || seg[id]?.tipo) !== 'pg') {
+      const luogo = await this.get('luogo:' + await this.get('luogoAttuale'));
+      if (luogo && x < luogo.w && y < luogo.h) { const presi = new Set(Object.entries(seg).filter(([k]) => k !== id).map(([, s]) => s.y * luogo.w + s.x)); ({ x, y } = vicine(luogo, { x, y }, presi)); }
+    }
     if (m.rimuovi && capo) delete seg[id];
-    else seg[id] = { x: Math.max(0, Math.min(63, m.x | 0)), y: Math.max(0, Math.min(63, m.y | 0)), nome: testo(m.nome, 30) || seg[id]?.nome, colore: m.colore || seg[id]?.colore, tipo: m.tipo || seg[id]?.tipo || 'pg', pf: m.pf ?? seg[id]?.pf, ca: m.ca ?? seg[id]?.ca };
+    else seg[id] = { x, y, nome: testo(m.nome, 30) || seg[id]?.nome, colore: m.colore || seg[id]?.colore, tipo: m.tipo || seg[id]?.tipo || 'pg', pf: m.pf ?? seg[id]?.pf, ca: m.ca ?? seg[id]?.ca };
     await this.put('segnalini', seg);
     this.tutti({ t: 'segnalini', segnalini: seg });
-    if (seg[id]?.tipo === 'pg') await this.scopri([seg[id]]);
+    if (seg[id]?.tipo === 'pg') await this.scopri(via?.length ? via : [seg[id]]);
   }
+  wsDi(io) { return this.ctx.getWebSockets().find(ws => this.membroDi(ws) === io); }
 
   // Nebbia di guerra: ogni luogo ricorda le caselle già viste dal gruppo
   async scopri(punti, luogoDato) {
     const id = luogoDato?.id || await this.get('luogoAttuale'); if (!id) return;
     const luogo = luogoDato || await this.get('luogo:' + id); if (!luogo) return;
-    const r = ['dungeon', 'grotta', 'taverna'].includes(luogo.tipo) ? 3 : 6;
-    const v = (luogo.visto || '0'.repeat(luogo.w * luogo.h)).split('');
+    // si scopre solo ciò che si vede davvero: muri, rocce e case bloccano la vista (stanze dietro i muri restano nascoste)
+    const r = ['dungeon', 'grotta'].includes(luogo.tipo) ? 5 : ['taverna', 'interno'].includes(luogo.tipo) ? 8 : 9;
+    const v = (luogo.visto || '0'.repeat(luogo.w * luogo.h)).split(''), { vista } = griglia(luogo);
     let cambi = 0;
     for (const p of punti) for (let y = p.y - r; y <= p.y + r; y++) for (let x = p.x - r; x <= p.x + r; x++) {
       if (x < 0 || y < 0 || x >= luogo.w || y >= luogo.h || (x - p.x) ** 2 + (y - p.y) ** 2 > r * r) continue;
-      const i = y * luogo.w + x; if (v[i] === '0') { v[i] = '1'; cambi++; }
+      const i = y * luogo.w + x; if (v[i] !== '0' || !vede(luogo, vista, p.x, p.y, x, y)) continue;
+      v[i] = '1'; cambi++;
     }
     if (!cambi && luogo.visto) return luogo;
     luogo.visto = v.join('');
@@ -609,17 +623,16 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     await this.put('luogo:' + id, luogo);
     await this.put('luogoAttuale', id);
     const membri = await this.get('membri', {});
-    const seg = {};
-    let k = 0;
+    const seg = {}, presi = new Set(), posto = (da) => { const p = vicine(luogo, da, presi); presi.add(p.y * luogo.w + p.x); return p; };
     for (const [mid, mm] of Object.entries(membri)) {
       if (mm.ruolo !== 'giocatore') continue;
       const pg = await this.get('pg:' + mid);
-      seg[mid] = { x: Math.min(W - 1, luogo.ingresso.x + (k % 2)), y: Math.min(H - 1, luogo.ingresso.y + Math.floor(k / 2)), nome: pg?.nome || mm.nome, colore: mm.colore, tipo: 'pg' }; k++;
+      seg[mid] = { ...posto(luogo.ingresso), nome: pg?.nome || mm.nome, colore: mm.colore, tipo: 'pg' };
     }
     // chi abita il luogo: l'oste dietro il bancone, il padrone di casa negli interni
-    if ((await this.get('campagna'))?.solitaria) COMPAGNI.forEach((cmp, i) => { seg[cmp.id] = { x: Math.min(W - 1, luogo.ingresso.x + 1 + i), y: Math.min(H - 1, luogo.ingresso.y + 1), nome: cmp.nome, tipo: 'alleato', colore: '#5cc85c', pf: cmp.pf, ca: cmp.ca }; });
+    if ((await this.get('campagna'))?.solitaria) COMPAGNI.forEach(cmp => { seg[cmp.id] = { ...posto(luogo.ingresso), nome: cmp.nome, tipo: 'alleato', colore: '#5cc85c', pf: cmp.pf, ca: cmp.ca }; });
     const banco = luogo.edifici.find(e => e.id === 'bancone');
-    if (banco) seg.p_oste = { x: banco.x + 4, y: Math.max(1, banco.y - 1), nome: luogo.png || 'Oste', tipo: 'png', colore: '#bfae86' };
+    if (banco) seg.p_oste = { ...posto({ x: banco.x + 4, y: Math.max(1, banco.y - 1) }), nome: luogo.png || 'Oste', tipo: 'png', colore: '#bfae86' };
     else if (luogo.png && luogo.tipo === 'interno') { const cx = Math.floor(W / 2), cy = Math.floor(H / 2); for (let r = 0; r < 6 && !seg.p_casa; r++) for (let dy = -r; dy <= r && !seg.p_casa; dy++) for (let dx = -r; dx <= r; dx++) { const x = cx + dx, y = cy + dy; if (luogo.celle[y]?.[x] === '=' && !(luogo.oggetti || []).some(o => o.x === x && o.y === y)) { seg.p_casa = { x, y, nome: luogo.png, tipo: 'png', colore: '#bfae86' }; break; } } }
     await this.put('segnalini', seg);
     await this.put('aree', []);
@@ -632,7 +645,12 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
 
   async luogoCon(id) {
     const l = id ? await this.get('luogo:' + id) : null;
-    if (l && !l.oggetti) { l.oggetti = arreda(l, l.creato + ':' + id); await this.put('luogo:' + id, l); }
+    if (l && (!l.oggetti || l.arrediV !== ARREDI_V)) {
+      const c = await this.get('campagna'), nuovo = generaLuogo(l.nome, l.tipo, (c?.creata || l.creato) + ':' + id, l.tipo === 'interno' ? l.edifici.map(e => e.nome) : undefined);
+      l.celle = nuovo.celle; l.oggetti = nuovo.oggetti; l.arrediV = ARREDI_V;
+      for (const e of l.edifici) if (e.stato === 'bruciato' || e.stato === 'distrutto') for (const o of l.oggetti) if (o.x >= e.x && o.x < e.x + e.w && o.y >= e.y && o.y < e.y + e.h) o.stato = e.stato === 'bruciato' ? 'bruciato' : 'rotto';
+      await this.put('luogo:' + id, l);
+    }
     return l;
   }
 
@@ -1323,30 +1341,125 @@ export function generaLuogo(nome, tipo, seme, nomiInterni) {
   }
   if ('#RTw~'.includes(g[ingresso.y][ingresso.x])) set(ingresso.x, ingresso.y, '_');
   const l = { id: chiaveLuogo(nome), nome, tipo, w: W, h: H, celle: g.map(r => r.join('')), edifici, ingresso, storia: [], creato: Date.now() };
-  l.oggetti = arreda(l, seme);
+  collega(l);
+  l.oggetti = arreda(l, seme); l.arrediV = ARREDI_V;
   return l;
 }
 
 // Oggetti di scena (persistenti): strutturali (fissi) o movibili. Tavoli e letti passano dalle caselle agli oggetti.
+// ---------- griglia: passaggi, percorsi e linea di vista (le stesse regole stanno in mappa.js) ----------
+export const ARREDI_V = 2;
+export const PASSABILI = ['tappeto', 'ragnatela', 'ossa', 'funghi', 'macerie', 'torcia', 'candelabro'];
+export const DUE_CASELLE = ['letto', 'carretto', 'tronco', 'bancarella', 'barca'];
+export function celleOggetto(o) { return DUE_CASELLE.includes(o.tipo) ? [[o.x, o.y], o.dir === 'v' ? [o.x, o.y + 1] : [o.x + 1, o.y]] : [[o.x, o.y]]; }
+const ESTERNI = ['citta', 'villaggio', 'porto', 'foresta', 'aperto', 'castello'];
+// caselle dove non si cammina: muri, rocce, acqua, alberi, camino, bancone, le case viste da fuori, gli oggetti ingombranti
+export function griglia(l) {
+  const blocco = new Uint8Array(l.w * l.h), vista = new Uint8Array(l.w * l.h);
+  for (let y = 0; y < l.h; y++) for (let x = 0; x < l.w; x++) { const c = l.celle[y][x], i = y * l.w + x; if ('#wR~Tfb'.includes(c)) blocco[i] = 1; if ('#wR'.includes(c)) vista[i] = 1; }
+  if (ESTERNI.includes(l.tipo)) for (const e of l.edifici) if (l.celle[e.y]?.[e.x] === '#' && e.stato !== 'distrutto') for (let y = e.y; y < e.y + e.h; y++) for (let x = e.x; x < e.x + e.w; x++) { blocco[y * l.w + x] = 1; vista[y * l.w + x] = 1; }
+  for (const o of l.oggetti || []) if (!PASSABILI.includes(o.tipo) && !(o.tipo === 'barca')) for (const [x, y] of celleOggetto(o)) if (x < l.w && y < l.h) blocco[y * l.w + x] = 1;
+  for (const o of l.oggetti || []) if (['colonna', 'statua', 'scaffale', 'masso', 'stalagmite'].includes(o.tipo)) vista[o.y * l.w + o.x] = 1;
+  return { blocco, vista };
+}
+// percorso più breve a 8 direzioni senza tagliare gli angoli dei muri; null se non si arriva
+// la casella libera (raggiungibile a piedi) più vicina a [da] e non ancora presa: dove far comparire chi entra
+export function vicine(l, da, presi = new Set(), blocco = griglia(l).blocco) {
+  const W2 = l.w, H2 = l.h, vis = new Uint8Array(W2 * H2), q = [da.y * W2 + da.x]; vis[q[0]] = 1;
+  for (let k = 0; k < q.length; k++) {
+    const i = q[k], x = i % W2, y = (i / W2) | 0;
+    if (!blocco[i] && !presi.has(i)) return { x, y };
+    for (const [dx, dy] of [[0, -1], [1, 0], [-1, 0], [0, 1]]) { const nx = x + dx, ny = y + dy, j = ny * W2 + nx; if (nx >= 0 && ny >= 0 && nx < W2 && ny < H2 && !vis[j] && (!blocco[j] || blocco[i])) { vis[j] = 1; q.push(j); } }
+  }
+  return { x: da.x, y: da.y };
+}
+export function percorso(l, da, a, blocco = griglia(l).blocco) {
+  const W2 = l.w, H2 = l.h, ok = (x, y) => x >= 0 && y >= 0 && x < W2 && y < H2 && !blocco[y * W2 + x];
+  if (!ok(a.x, a.y)) return null;
+  const prima = new Int32Array(W2 * H2).fill(-1), coda = [da.y * W2 + da.x]; prima[coda[0]] = coda[0];
+  for (let q = 0; q < coda.length; q++) {
+    const i = coda[q], x = i % W2, y = (i / W2) | 0;
+    if (x === a.x && y === a.y) { const via = []; for (let k = i; k !== prima[k]; k = prima[k]) via.push({ x: k % W2, y: (k / W2) | 0 }); return via.reverse(); }
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+      const nx = x + dx, ny = y + dy, j = ny * W2 + nx;
+      if (!ok(nx, ny) || prima[j] >= 0 || (dx && dy && (!ok(x + dx, y) || !ok(x, y + dy)))) continue;
+      prima[j] = i; coda.push(j);
+    }
+  }
+  return null;
+}
+// ogni zona percorribile si collega all'ingresso: si apre la strada tra alberi e rocce, si getta un ponte sull'acqua
+// (mai attraverso le case o le mura della città), così nessuna parte della mappa resta irraggiungibile
+export function collega(l) {
+  const W2 = l.w, H2 = l.h, g = l.celle.map(r => r.split('')), pav = l.tipo === 'grotta' || l.tipo === 'dungeon' ? '_' : ['taverna', 'interno'].includes(l.tipo) ? '=' : '.';
+  const casa = new Uint8Array(W2 * H2);
+  if (ESTERNI.includes(l.tipo)) for (const e of l.edifici) if (g[e.y]?.[e.x] === '#') for (let y = e.y - 1; y <= e.y + e.h; y++) for (let x = e.x - 1; x <= e.x + e.w; x++) if (x >= 0 && y >= 0 && x < W2 && y < H2) casa[y * W2 + x] = 1;
+  const libera = (x, y) => !'#wR~Tfb'.includes(g[y][x]) && !(casa[y * W2 + x] && g[y][x] === '#');
+  const scavabile = (x, y) => x > 0 && y > 0 && x < W2 - 1 && y < H2 - 1 && !casa[y * W2 + x] && g[y][x] !== 'w' && g[y][x] !== 'f' && g[y][x] !== 'b' && !(ESTERNI.includes(l.tipo) && g[y][x] === '#');
+  let reg = null;
+  for (let giro = 0; giro < 40; giro++) {
+    reg = new Int32Array(W2 * H2).fill(-1); const q = [l.ingresso.y * W2 + l.ingresso.x];
+    if (!libera(l.ingresso.x, l.ingresso.y)) return;
+    reg[q[0]] = 0;
+    for (let k = 0; k < q.length; k++) { const i = q[k], x = i % W2, y = (i / W2) | 0; for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const nx = x + dx, ny = y + dy, j = ny * W2 + nx; if (nx >= 0 && ny >= 0 && nx < W2 && ny < H2 && reg[j] < 0 && libera(nx, ny)) { reg[j] = 0; q.push(j); } } }
+    // la zona isolata più vicina (almeno 3 caselle)
+    let partenza = -1;
+    for (let i = 0; i < W2 * H2 && partenza < 0; i++) { const x = i % W2, y = (i / W2) | 0; if (reg[i] < 0 && libera(x, y)) { let n = 0; for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) if (g[y + dy]?.[x + dx] && libera(x + dx, y + dy)) n++; if (n >= 2) partenza = i; } }
+    if (partenza < 0) break;
+    // strada più corta (Dijkstra semplice) dalla zona isolata a quella dell'ingresso, scavando il meno possibile
+    const costo = new Float32Array(W2 * H2).fill(1e9), da = new Int32Array(W2 * H2).fill(-1), aperti = [partenza]; costo[partenza] = 0;
+    let arrivo = -1;
+    while (aperti.length) {
+      aperti.sort((a, b) => costo[a] - costo[b]); const i = aperti.shift(), x = i % W2, y = (i / W2) | 0;
+      if (reg[i] === 0) { arrivo = i; break; }
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const nx = x + dx, ny = y + dy, j = ny * W2 + nx; if (nx < 0 || ny < 0 || nx >= W2 || ny >= H2) continue; const c = libera(nx, ny) ? 1 : scavabile(nx, ny) ? 6 : 1e9; if (c >= 1e9) continue; if (costo[i] + c < costo[j]) { costo[j] = costo[i] + c; da[j] = i; aperti.push(j); } }
+    }
+    if (arrivo < 0) { const x = partenza % W2, y = (partenza / W2) | 0; g[y][x] = l.tipo === 'grotta' ? 'R' : g[y][x]; if (l.tipo !== 'grotta') break; continue; }
+    for (let k = arrivo; k >= 0; k = da[k]) { const x = k % W2, y = (k / W2) | 0; if (!libera(x, y)) g[y][x] = g[y][x] === '~' ? '=' : pav; }
+    reg = null;
+  }
+  // angolini rimasti chiusi (cortili tra le case, buchi tra gli alberi): diventano alberi o roccia, così non c'è niente di irraggiungibile
+  if (reg) for (let i = 0; i < W2 * H2; i++) { const x = i % W2, y = (i / W2) | 0; if (reg[i] < 0 && libera(x, y) && '.,_='.includes(g[y][x])) g[y][x] = ESTERNI.includes(l.tipo) ? 'T' : l.tipo === 'grotta' ? 'R' : g[y][x]; }
+  l.celle = g.map(r => r.join(''));
+}
+export function vede(l, vista, x0, y0, x1, y1) {
+  const dx = x1 - x0, dy = y1 - y0, passi = Math.ceil(Math.hypot(dx, dy) / 0.3);
+  for (let i = 1; i < passi; i++) { const x = Math.floor(x0 + 0.5 + dx * i / passi), y = Math.floor(y0 + 0.5 + dy * i / passi); if ((x !== x0 || y !== y0) && (x !== x1 || y !== y1) && vista[y * l.w + x]) return false; }
+  return true;
+}
 export const MOVIBILI = ['tavolo', 'sedia', 'sgabello', 'botte', 'cassa', 'baule', 'forziere', 'carretto', 'panca', 'sacco', 'secchio', 'barca'];
 export function arreda(l, seme) {
   const R = rng(seme + ':arredi'), ri = (a, b) => a + Math.floor(R() * (b - a + 1));
   const g = l.celle.map(r => r.split('')), out = [];
   const pav = ['taverna', 'interno'].includes(l.tipo) ? '=' : '_';
   const occ = new Set();
-  const metti = (tipo, x, y, rot = 0) => {
-    if (x < 0 || y < 0 || x >= l.w || y >= l.h || occ.has(x + ',' + y)) return false;
-    occ.add(x + ',' + y); out.push({ id: 'o' + (out.length + 1), tipo, x, y, rot, stato: 'integro', movibile: MOVIBILI.includes(tipo) }); return true;
+  // davanti alle porte e all'ingresso non si mette niente
+  const vietate = new Set();
+  const vieta = (x, y) => { for (const [dx, dy] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]]) vietate.add((x + dx) + ',' + (y + dy)); };
+  for (let y = 0; y < l.h; y++) for (let x = 0; x < l.w; x++) if (g[y][x] === '+' || g[y][x] === '^') vieta(x, y);
+  vieta(l.ingresso.x, l.ingresso.y);
+  const dentroCasa = (x, y) => ESTERNI.includes(l.tipo) && l.edifici.some(e => g[e.y]?.[e.x] === '#' && x >= e.x && x < e.x + e.w && y >= e.y && y < e.y + e.h);
+  const metti = (tipo, x, y, rot = 0, dir) => {
+    const o = { id: 'o' + (out.length + 1), tipo, x, y, rot, stato: 'integro', movibile: MOVIBILI.includes(tipo) };
+    if (DUE_CASELLE.includes(tipo)) o.dir = dir || 'h';
+    const celle = celleOggetto(o);
+    if (celle.some(([cx, cy]) => g[cy]?.[cx] !== g[y][x]) || celle.some(([cx, cy]) => cx < 0 || cy < 0 || cx >= l.w || cy >= l.h || occ.has(cx + ',' + cy) || vietate.has(cx + ',' + cy) || dentroCasa(cx, cy))) return false;
+    celle.forEach(([cx, cy]) => occ.add(cx + ',' + cy)); out.push(o); return true;
   };
   const su = (x, y, cc) => cc.includes(g[y]?.[x]);
-  const vicinoMuro = (x, y) => [[0, -1], [0, 1], [-1, 0], [1, 0]].find(([dx, dy]) => '#wR'.includes(g[y + dy]?.[x + dx] || '#'));
+  // lato del muro a cui l'oggetto si appoggia: 0 nord, 1 est, 2 sud, 3 ovest (l'oggetto guarda dalla parte opposta)
+  const LATI = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+  const latoMuro = (x, y) => { const k = LATI.findIndex(([dx, dy]) => '#wR'.includes(g[y + dy]?.[x + dx] || '#')); return k; };
+  const vicinoMuro = (x, y) => latoMuro(x, y) >= 0;
   // tavoli con sedie, letti con bauli
   for (let y = 0; y < l.h; y++) for (let x = 0; x < l.w; x++) {
-    if (g[y][x] === 't') { g[y][x] = pav; metti('tavolo', x, y); [[-1, 0, 1], [1, 0, 3], [0, -1, 2], [0, 1, 0]].forEach(([dx, dy, r]) => { if (su(x + dx, y + dy, pav) && R() < 0.75) metti(l.tipo === 'taverna' && R() < 0.4 ? 'sgabello' : 'sedia', x + dx, y + dy, r); }); }
-    if (g[y][x] === 'c') { g[y][x] = pav; metti('letto', x, y); if (su(x, y + 1, pav)) metti('baule', x, y + 1); }
+    // sedie attorno al tavolo, ognuna girata verso il tavolo (rot = lato dove sta il tavolo)
+    if (g[y][x] === 't') { g[y][x] = pav; metti('tavolo', x, y); [[-1, 0, 1], [1, 0, 3], [0, -1, 2], [0, 1, 0]].forEach(([dx, dy, r]) => { if (su(x + dx, y + dy, pav) && R() < 0.7) metti(l.tipo === 'taverna' && R() < 0.4 ? 'sgabello' : 'sedia', x + dx, y + dy, r); }); }
+    // letto lungo due caselle con la testiera al muro, baule ai piedi
+    if (g[y][x] === 'c') { g[y][x] = pav; const k = latoMuro(x, y), v = k === 0 || k === 2 || k < 0; const fx = v ? x : (k === 1 ? x - 1 : x), fy = v ? (k === 2 ? y - 1 : y) : y; if (su(v ? fx : fx, v ? fy + (k === 2 ? 0 : 1) : fy, pav) || true) { if (metti('letto', fx, fy, k < 0 ? 0 : k, v ? 'v' : 'h')) { const px = v ? fx : (k === 1 ? fx - 1 : fx + 2), py = v ? (k === 2 ? fy - 1 : fy + 2) : fy; if (su(px, py, pav)) metti('baule', px, py, k); } } }
   }
   const libere = (cc, fn) => { const v = []; for (let y = 1; y < l.h - 1; y++) for (let x = 1; x < l.w - 1; x++) if (su(x, y, cc) && !occ.has(x + ',' + y) && (!fn || fn(x, y))) v.push([x, y]); return v; };
-  const sparsi = (tipi, n, cc, fn) => { const v = libere(cc, fn); for (let k = 0; k < n && v.length; k++) { const [x, y] = v.splice(Math.floor(R() * v.length), 1)[0]; metti(tipi[ri(0, tipi.length - 1)], x, y, ri(0, 3)); } };
+  const sparsi = (tipi, n, cc, fn) => { const v = libere(cc, fn); for (let k = 0; k < n && v.length; k++) { const [x, y] = v.splice(Math.floor(R() * v.length), 1)[0], tipo = tipi[ri(0, tipi.length - 1)], lm = latoMuro(x, y); if (DUE_CASELLE.includes(tipo)) { if (!metti(tipo, x, y, 0, 'h')) metti(tipo, x, y, 0, 'v'); } else metti(tipo, x, y, lm >= 0 ? lm : ri(0, 3)); } };
   const dentro = (nome) => { const e = l.edifici.find(e => e.nome.startsWith(nome)); return e ? (x, y) => x >= e.x && x < e.x + e.w && y >= e.y && y < e.y + e.h : () => false; };
   if (l.tipo === 'taverna') {
     for (let x = 2; x < 12; x += 3) metti('botte', x, 1 + (su(x, 1, pav) ? 0 : 2));
@@ -1380,5 +1493,17 @@ export function arreda(l, seme) {
     sparsi(['cespuglio', 'masso', 'tronco', 'ceppo', 'fieno'], 16, '.');
   }
   l.celle = g.map(r => r.join(''));
-  return out;
+  // nessun oggetto deve chiudere un passaggio: si tolgono quelli che isolano caselle prima raggiungibili
+  const base = griglia({ ...l, oggetti: [] }).blocco, raggiungibili = b => { const vis = new Uint8Array(l.w * l.h), q = [l.ingresso.y * l.w + l.ingresso.x]; if (b[q[0]]) return vis; vis[q[0]] = 1; for (let k = 0; k < q.length; k++) { const i = q[k], x = i % l.w, y = (i / l.w) | 0; for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const nx = x + dx, ny = y + dy, j = ny * l.w + nx; if (nx >= 0 && ny >= 0 && nx < l.w && ny < l.h && !b[j] && !vis[j]) { vis[j] = 1; q.push(j); } } } return vis; };
+  const prima = raggiungibili(base); let conta = prima.reduce((a, v) => a + v, 0);
+  const tenuti = [], b = base.slice();
+  for (const o of out) {
+    if (PASSABILI.includes(o.tipo) || o.tipo === 'barca') { tenuti.push(o); continue; }
+    const celle = celleOggetto(o); if (celle.some(([x, y]) => !prima[y * l.w + x])) { tenuti.push(o); continue; } // fuori dalle zone percorribili (es. sull'acqua): non chiude niente
+    celle.forEach(([x, y]) => { b[y * l.w + x] = 1; });
+    const ora = raggiungibili(b).reduce((a, v) => a + v, 0);
+    if (ora === conta - celle.length) { tenuti.push(o); conta = ora; } else celle.forEach(([x, y]) => { b[y * l.w + x] = 0; });
+  }
+  tenuti.forEach((o, i) => { o.id = 'o' + (i + 1); });
+  return tenuti;
 }
