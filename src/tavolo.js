@@ -118,6 +118,8 @@ export class Tavolo extends DurableObject {
           this.tutti({ t: 'relazioni', relazioni: rel }); return;
         }
         case 'mondo_evolvi': if (!capo) return; return this.evolviMondo(true);
+        case 'entra_edificio': if (!capo && (await this.get('campagna')).masterTipo === 'umano') return; return this.entraEdificio(io, me, m.edificio);
+        case 'esci_edificio': { const l = await this.get('luogo:' + await this.get('luogoAttuale')); if (l?.genitore) { const g = await this.get('luogo:' + l.genitore); if (g) return this.vai(io, me, g.nome); } return; }
         case 'mondo': {
           if (!capo) return;
           const mo = await this.get('mondo', { fazioni: {}, valute: {}, viaggi: [], notizie: [] });
@@ -285,7 +287,7 @@ export class Tavolo extends DurableObject {
     let luogo = await this.get('luogo:' + id);
     const nuovo = !luogo;
     if (!luogo) {
-      const t = ['citta', 'villaggio', 'taverna', 'dungeon', 'foresta', 'grotta', 'castello', 'porto', 'aperto'].includes(tipo) ? tipo : indovinaTipo(nome);
+      const t = ['citta', 'villaggio', 'taverna', 'dungeon', 'foresta', 'grotta', 'castello', 'porto', 'aperto', 'interno'].includes(tipo) ? tipo : indovinaTipo(nome);
       luogo = generaLuogo(nome, t, c.creata + ':' + id);
       const idx = await this.get('luoghi', {});
       idx[id] = { nome: luogo.nome, tipo: luogo.tipo, prima: Date.now() };
@@ -488,6 +490,7 @@ Eventi possibili (solo se accadono davvero):
 {"tipo":"danno_nemico","nemico":"<id del segnalino>","quantita":n}
 {"tipo":"bottino","oro":n,"oggetti":["..."]} (va nel tesoro comune del gruppo)
 {"tipo":"fazione","nome":"Gilda dei Ladri","descrizione":"..."} (nuova fazione) e {"tipo":"reputazione","fazione":"...","delta":n,"motivo":"..."} (da -100 a +100: i PNG delle fazioni trattano il gruppo di conseguenza)
+{"tipo":"tempo","giorni":n,"stagione":"primavera|estate|autunno|inverno"} (quando passa il tempo nel gioco)
 {"tipo":"valuta","nome":"Corone di Argentea","cambio":0.5} (valuta locale e quanto vale in monete d'oro) e {"tipo":"valuta_pg","pg":"<id>","valuta":"...","quantita":n}
 Durante il combattimento rispetta l'ordine di iniziativa e gioca tu i turni dei nemici quando tocca a loro.`;
     const contesto = {
@@ -498,6 +501,8 @@ Durante il combattimento rispetta l'ordine di iniziativa e gioca tu i turni dei 
       nemici_sulla_mappa: Object.entries(await this.get('segnalini', {})).filter(([, s2]) => s2.tipo === 'nemico').map(([id, s2]) => ({ id, nome: s2.nome, x: s2.x, y: s2.y, pf: s2.pf, ca: s2.ca })),
       combattimento: await this.get('combattimento', null),
       tesoro_del_gruppo: await this.get('gruppo', null),
+      stagione_reale: stagione(),
+      calendario_di_gioco: (await this.get('mondo', {}))?.calendario || null,
       fazioni_e_reputazione: (await this.get('mondo', {}))?.fazioni || {},
       valute_locali: (await this.get('mondo', {}))?.valute || {},
       relazioni_tra_personaggi: await this.get('relazioni', {}),
@@ -547,6 +552,7 @@ Durante il combattimento rispetta l'ordine di iniziativa e gioca tu i turni dei 
         if (e.delta) { const ev = await this.diario('mondo', `Reputazione con ${f}: ${e.delta > 0 ? '+' : ''}${e.delta}${e.motivo ? ' (' + testo(e.motivo, 80) + ')' : ''}.`, 'master'); this.tutti({ t: 'diario', ev }); }
         return;
       }
+      case 'tempo': { const mo = await this.get('mondo', { fazioni: {}, valute: {}, viaggi: [], notizie: [] }); const cal = mo.calendario || { giorno: 1, stagione: 'primavera' }; cal.giorno += Math.max(0, Math.min(365, Number(e.giorni) || 0)); if (['primavera', 'estate', 'autunno', 'inverno'].includes(e.stagione)) cal.stagione = e.stagione; mo.calendario = cal; await this.put('mondo', mo); this.tutti({ t: 'mondo', mondo: mo }); return; }
       case 'valuta': { const mo = await this.get('mondo', { fazioni: {}, valute: {}, viaggi: [], notizie: [] }); const v = testo(e.nome, 40); if (!v) return; mo.valute[v] = { cambio: Math.max(0.001, Number(e.cambio) || 1) }; await this.put('mondo', mo); this.tutti({ t: 'mondo', mondo: mo }); return; }
       case 'valuta_pg': return pgMod(e.pg, p => { p.valute = { ...(p.valute || {}), [testo(e.valuta, 40)]: Math.max(0, (p.valute?.[e.valuta] || 0) + (Number(e.quantita) || 0)) }; }, `${Number(e.quantita) >= 0 ? 'ottiene' : 'spende'} ${Math.abs(Number(e.quantita) || 0)} ${testo(e.valuta, 40)}`);
       case 'combattimento': return this.combattimento('master', { nome: 'Master' }, true, { azione: ['inizia', 'prossimo', 'fine'].includes(e.azione) ? e.azione : 'inizia' });
@@ -583,6 +589,31 @@ Rispondi SOLO JSON: {"notizie":"testo di massimo 80 parole da leggere ad alta vo
       const ev = await this.diario('narrazione', 'Notizie dal mondo: ' + out.notizie, 'master');
       this.tutti({ t: 'narra', testo: ev.testo, png: 'Il banditore', chi: 'master' });
     }
+  }
+
+  // Entrare in un edificio: interno generato una volta (stanze e descrizione dall'IA gratuita di Cloudflare, ripiego su Gemini)
+  async entraEdificio(io, me, edId) {
+    const pid = await this.get('luogoAttuale'); const padre = await this.get('luogo:' + pid); if (!padre) return;
+    const ed = padre.edifici.find(e => e.id === edId); if (!ed) return;
+    if (ed.stato === 'distrutto') { const ev = await this.diario('luogo', `${ed.nome} è solo macerie: non si può entrare.`, io); return this.tutti({ t: 'diario', ev }); }
+    const nome = `${ed.nome} di ${padre.nome}`.slice(0, 60);
+    const id = chiaveLuogo(nome);
+    if (!await this.get('luogo:' + id)) {
+      const c = await this.get('campagna');
+      const tipo = /locanda|taverna|osteria/i.test(ed.nome) ? 'taverna' : 'interno';
+      let info = null;
+      const domanda = `Ambientazione D&D: ${c.ambientazione}. Descrivi l'interno di "${ed.nome}" nel luogo "${padre.nome}"${ed.stato !== 'integro' ? ' (' + ed.stato + ')' : ''}. Rispondi SOLO JSON: {"descrizione":"massimo 60 parole in italiano, da leggere ad alta voce","stanze":["nome stanza 1", "... fino a 6 nomi brevi in italiano"],"png":"nome e ruolo di chi si trova dentro, o vuoto"}`;
+      if (this.env.AI) { try { const o = await this.env.AI.run('@cf/meta/llama-3.1-8b-instruct', { messages: [{ role: 'user', content: domanda }], max_tokens: 400 }); info = leggiJSON(o?.response || ''); if (info) info.da = 'cloudflare'; } catch {} }
+      if (!info) { const r = await this.g({ contents: [{ parts: [{ text: domanda }] }], generationConfig: { temperature: 0.8, responseMimeType: 'application/json' } }, 'interni'); if (r.ok) { info = leggiJSON((await r.json()).candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || ''); if (info) info.da = 'gemini'; } }
+      const stanze = Array.isArray(info?.stanze) && info.stanze.length ? info.stanze.map(x => testo(x, 30)) : ['Ingresso', 'Sala', 'Magazzino', 'Stanza privata', 'Cucina', 'Retro'];
+      const l = generaLuogo(nome, tipo, c.creata + ':' + id, stanze);
+      l.genitore = pid; l.descrizione = testo(info?.descrizione, 600); l.png = testo(info?.png, 60); l.generatoDa = info?.da || 'nessuna IA';
+      await this.put('luogo:' + id, l);
+      const idx = await this.get('luoghi', {}); idx[id] = { nome, tipo, prima: Date.now(), interno: true }; await this.put('luoghi', idx);
+    }
+    await this.vai(io, me, nome);
+    const l = await this.get('luogo:' + id);
+    if (l.descrizione && l.visite <= 1) { const ev = await this.diario('narrazione', l.descrizione, 'master'); this.tutti({ t: 'narra', testo: ev.testo, png: '', chi: 'master' }); }
   }
 
   async riassumi() {
@@ -638,6 +669,12 @@ async function chiamaGemini(env, corpo) {
   }
   return r;
 }
+// Eventi stagionali del mondo reale: il master li intreccia nella storia se ha senso
+function stagione() {
+  const d = new Date(), m = d.getUTCMonth() + 1, g = d.getUTCDate();
+  const ev = (m === 10 && g >= 20) || (m === 11 && g <= 2) ? 'notte delle ombre (Halloween): spiriti, maschere, zucche intagliate' : m === 12 || (m === 1 && g <= 6) ? 'feste d\'inverno (Natale): neve, luci, doni, banchetti' : m === 2 ? 'carnevale: maschere, scherzi, feste in piazza' : m === 8 && g >= 10 && g <= 20 ? 'Ferragosto: fiere d\'estate e caldo torrido' : null;
+  return { mese: m, stagione: m <= 2 || m === 12 ? 'inverno' : m <= 5 ? 'primavera' : m <= 8 ? 'estate' : 'autunno', evento: ev };
+}
 function leggiJSON(t) { try { return JSON.parse(t); } catch {} try { return JSON.parse(t.match(/\{[\s\S]*\}/)[0]); } catch { return null; } }
 
 // ---------- dadi ----------
@@ -674,7 +711,7 @@ function rng(seme) {
 // Caselle: . erba  , strada  # muro  _ pavimento  ~ acqua  T albero  R roccia  = legno  + porta  t tavolo  b bancone  f focolare  c letto  ^ scala  w mura
 export const W = 32, H = 20;
 const NOMI_CITTA = ['Fabbro', 'Tempio', 'Mercato', 'Municipio', 'Caserma', 'Bottega dell\'alchimista', 'Stalla', 'Biblioteca', 'Gilda dei mercanti', 'Casa', 'Casa', 'Casa', 'Magazzino', 'Mulino', 'Torre del mago', 'Sartoria', 'Panetteria'];
-export function generaLuogo(nome, tipo, seme) {
+export function generaLuogo(nome, tipo, seme, nomiInterni) {
   const R = rng(seme);
   const ri = (a, b) => a + Math.floor(R() * (b - a + 1));
   const g = Array.from({ length: H }, () => Array(W).fill('.'));
@@ -761,6 +798,17 @@ export function generaLuogo(nome, tipo, seme) {
     edifici.push({ id: 'radura', nome: 'Radura', x: cx, y: cy, w: 6, h: 5, stato: 'integro' });
     if (R() < 0.6) casa(cx + 1, cy + 1, 4, 3, 'Capanna');
     ingresso = { x: 0, y: y0 };
+  } else if (tipo === 'interno') {
+    // stanze divise da muri con porte; arredi sparsi
+    rett(0, 0, W, H, '#'); rett(1, 1, W - 2, H - 2, '=');
+    const tagli = [ri(9, 13), ri(19, 23)], ty = ri(8, 11);
+    for (const x of tagli) { rett(x, 1, 1, H - 2, '#'); set(x, ri(2, ty - 2), '+'); set(x, ri(ty + 2, H - 3), '+'); }
+    rett(1, ty, W - 2, 1, '#'); [ri(3, tagli[0] - 2), ri(tagli[0] + 2, tagli[1] - 2), ri(tagli[1] + 2, W - 3)].forEach(x => set(x, ty, '+'));
+    const zone = [[1, 1, tagli[0] - 1, ty - 1], [tagli[0] + 1, 1, tagli[1] - tagli[0] - 1, ty - 1], [tagli[1] + 1, 1, W - tagli[1] - 2, ty - 1], [1, ty + 1, tagli[0] - 1, H - ty - 2], [tagli[0] + 1, ty + 1, tagli[1] - tagli[0] - 1, H - ty - 2], [tagli[1] + 1, ty + 1, W - tagli[1] - 2, H - ty - 2]];
+    (nomiInterni || []).slice(0, 6).forEach((n, i) => { const [x, y, w, h] = zone[i]; edifici.push({ id: 'r' + (i + 1), nome: n, x, y, w, h, stato: 'integro' }); });
+    for (const [x, y, w, h] of zone) for (let k = 0; k < 3; k++) { const ax = x + ri(1, Math.max(1, w - 2)), ay = y + ri(1, Math.max(1, h - 2)); if (g[ay][ax] === '=') set(ax, ay, ['t', 'c', 'b', 'f', 't'][ri(0, 4)]); }
+    set(Math.floor(W / 2), H - 1, '+');
+    ingresso = { x: Math.floor(W / 2), y: H - 2 };
   } else {
     for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (R() < 0.08) g[y][x] = R() < 0.5 ? 'T' : 'R';
     rett(0, Math.floor(H / 2), W, 2, ',');
