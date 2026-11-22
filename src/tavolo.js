@@ -70,7 +70,7 @@ export class Tavolo extends DurableObject {
       await this.put('diario', d);
       this.tutti({ t: 'diario', ev: d[d.length - 1] });
       return id;
-    } catch {}
+    } catch (e) { this.erroreImg = String(e?.message || e).slice(0, 160); console.error('illustra', this.erroreImg); return null; }
   }
   // ---------- riepilogo illustrato di fine sessione ----------
   async riepilogo() {
@@ -295,7 +295,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     // se Gemini non risponde si disegna comunque il luogo, senza lasciare il gruppo ad aspettare
     const prompt = t.match(/PROMPT:\s*(.+)/i)?.[1] || `Detailed fantasy D&D illustration of ${luogo?.nome || 'an adventuring party'} (${luogo?.tipo || 'tavern'}), cinematic lighting, painterly, atmospheric`, did = t.match(/DIDASCALIA:\s*(.+)/i)?.[1];
     const ok = await this.illustra(prompt, did || luogo?.nome || 'La scena', forza);
-    if (!ok && forza) this.tutti({ t: 'avviso', msg: "L'illustrazione non è riuscita (servizio immagini occupato o quota del giorno finita): riprova tra poco" });
+    if (!ok && forza) this.tutti({ t: 'avviso', msg: "L'illustrazione non è riuscita (servizio immagini occupato o quota del giorno finita): riprova tra poco", motivo: this.erroreImg || null });
   }
 
   // ---------- connettore per Claude: lettura dello stato e preparazione delle sessioni ----------
