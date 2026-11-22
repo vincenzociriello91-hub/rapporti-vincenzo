@@ -1204,29 +1204,29 @@ export function nomeMostro(n) { return testo(n, 40).toLowerCase().replace(/[^a-z
 export async function generaImmagine(env, prompt, piccola) {
   const stile = 'Realistic cinematic fantasy illustration, Dungeons and Dragons, dramatic volumetric lighting, highly detailed, painterly realism, no text, no watermark. ';
   if (env.IMG_FINTA) return Uint8Array.from(atob('/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/yQALCAABAAEBAREA/8wABgAQEAX/2gAIAQEAAD8A0s8g/9k='), c => c.charCodeAt(0));
-  let errore = null;
+  const errori = []; let errore = null;
   if (env.AI) {
     try { const r = await env.AI.run('@cf/black-forest-labs/flux-1-schnell', { prompt: piccola ? prompt : stile + prompt, steps: piccola ? 4 : 6 }); if (r?.image) return Uint8Array.from(atob(r.image), c => c.charCodeAt(0)); }
-    catch (e) { errore = e; } // es. 4006: finiti i 10.000 neuroni gratuiti del giorno (condivisi con le altre app)
+    catch (e) { errori.push(String(e.message || e).slice(0, 90)); } // es. 4006: finiti i 10.000 neuroni gratuiti del giorno (condivisi con le altre app)
   }
   // riserva 1: Hugging Face (chiave HF_TOKEN, crediti gratuiti del mese), come in KindredNest
   if (env.HF_TOKEN) {
     try {
       const r = await fetch('https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell', { method: 'POST', headers: { Authorization: `Bearer ${env.HF_TOKEN}`, 'Content-Type': 'application/json', Accept: 'image/jpeg' }, body: JSON.stringify({ inputs: (piccola ? '' : stile) + prompt, parameters: { num_inference_steps: 4, width: piccola ? 512 : 768, height: piccola ? 512 : 768 } }), signal: AbortSignal.timeout(60000) });
       if (r.ok && /^image\//.test(r.headers.get('content-type') || '')) return new Uint8Array(await r.arrayBuffer());
-      errore = new Error('Hugging Face ' + r.status + ' ' + (await r.text()).slice(0, 120));
-    } catch (e) { errore = e; }
+      errori.push('Hugging Face ' + r.status + ' ' + (await r.text()).slice(0, 120));
+    } catch (e) { errori.push('Hugging Face ' + (e.message || e)); }
   }
   // riserva 2: i modelli immagine di Gemini, con la sua quota separata
   for (const modello of env.GEMINI_KEY ? ['gemini-2.5-flash-image', 'gemini-3.1-flash-image'] : []) {
     try {
       const r = await fetch(`${env.GEMINI_BASE || 'https://generativelanguage.googleapis.com'}/v1beta/models/${modello}:generateContent?key=${encodeURIComponent(env.GEMINI_KEY)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: (piccola ? '' : stile) + prompt + (piccola ? '' : ' Square image.') }] }], generationConfig: { responseModalities: ['IMAGE'] } }), signal: AbortSignal.timeout(60000) });
-      if (!r.ok) { errore = new Error(`${modello} ${r.status}`); continue; }
+      if (!r.ok) { errori.push(`${modello} ${r.status}`); continue; }
       const dati = (await r.json()).candidates?.[0]?.content?.parts?.find(p => p.inlineData)?.inlineData?.data;
       if (dati) return Uint8Array.from(atob(dati), c => c.charCodeAt(0));
     } catch (e) { errore = e; }
   }
-  if (errore) throw errore;
+  if (errori.length) throw new Error(errori.join(' | '));
   return null;
 }
 // Eventi stagionali del mondo reale: il master li intreccia nella storia se ha senso
