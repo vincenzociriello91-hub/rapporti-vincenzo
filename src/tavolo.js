@@ -891,7 +891,7 @@ AVVENTURA PRONTA "${AVVENTURE[avv.id].titolo}": seguila (trovi scene, segreti e 
       contents: [{ role: 'user', parts: [{ text: JSON.stringify(contesto) }] }],
       generationConfig: { temperature: 0.85, responseMimeType: 'application/json' }
     });
-    if (!r.ok) { this.tutti({ t: 'errore', msg: `il master AI non risponde (${r.status}), riprova tra poco` }); return; }
+    if (!r.ok) { this.tutti({ t: 'errore', msg: r.status === 429 ? 'Il master AI ha finito la quota gratuita di oggi: riprova più tardi o passate al master umano' : `il master AI non risponde (${r.status}), riprova tra poco` }); return; }
     const j = await r.json();
     const out = leggiJSON(j.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '');
     if (!out) return;
@@ -1052,8 +1052,10 @@ Rispondi SOLO JSON: {"notizie":"testo di massimo 80 parole da leggere ad alta vo
 async function chiamaGemini(env, corpo, leggero) {
   if (!env.GEMINI_KEY) return { ok: false, status: 503 };
   // maestro: modello migliore; allievo (compiti leggeri): Flash-Lite, più veloce e con più quota gratuita
-  const modelli = leggero ? ['gemini-flash-lite-latest', 'gemini-2.5-flash-lite', 'gemini-flash-latest', 'gemini-2.5-flash'] : [...new Set([env.GEMINI_MODEL || 'gemini-flash-latest', 'gemini-2.5-flash', 'gemini-flash-lite-latest', 'gemini-2.5-flash-lite'])];
-  let r;
+  // ogni modello ha la sua quota gratuita: se uno è esaurito (429) o ritirato (404) si passa al successivo
+  const LITE = ['gemini-flash-lite-latest', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-2.5-flash-lite'], FLASH = ['gemini-flash-latest', 'gemini-3.5-flash', 'gemini-3-flash-preview', 'gemini-2.5-flash'];
+  const modelli = [...new Set(leggero ? [...LITE, ...FLASH] : [env.GEMINI_MODEL || 'gemini-flash-latest', ...FLASH, ...LITE])];
+  let r, peggiore = null;
   for (const modello of modelli) {
     const url = `${env.GEMINI_BASE || 'https://generativelanguage.googleapis.com'}/v1beta/models/${encodeURIComponent(modello)}:generateContent?key=${encodeURIComponent(env.GEMINI_KEY)}`;
     const invia = c => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(c) });
@@ -1062,8 +1064,9 @@ async function chiamaGemini(env, corpo, leggero) {
     if (r.status === 400) r = await invia({ ...corpo, generationConfig: { ...corpo.generationConfig, thinkingConfig: { thinkingLevel: 'minimal' } } });
     if (r.status === 400) r = await invia(corpo);
     if (![404, 429, 500, 503].includes(r.status)) { r.modello = modello; return r; }
+    if (r.status !== 404) peggiore = r; // un 404 (modello ritirato) non deve nascondere la quota finita
   }
-  return r;
+  return peggiore || r;
 }
 // Voce naturale: Gemini TTS (modelli più nuovi prima). Il PCM a 24 kHz diventa WAV a 16 kHz (più leggero da scaricare).
 const VOCI_PNG = ['Algenib', 'Fenrir', 'Puck', 'Kore', 'Leda', 'Orus', 'Aoede', 'Enceladus', 'Gacrux', 'Umbriel', 'Zephyr', 'Iapetus'];
