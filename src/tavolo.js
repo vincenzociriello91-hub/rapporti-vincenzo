@@ -84,7 +84,7 @@ export class Tavolo extends DurableObject {
     return {
       campagna: { ...campagna, invito: vedeSegreti || campagna.masterTipo === 'ai' ? campagna.invito : undefined },
       membri: membriPubblici, online: this.online(), pg,
-      luoghi: luoghiIdx, luogo: attuale ? await this.get('luogo:' + attuale) : null,
+      luoghi: luoghiIdx, luogo: await this.luogoCon(attuale),
       segnalini, diario: diario.slice(-120), dadi: dadi.filter(d => !d.segreto || vedeSegreti || d.chi === perMembro).slice(-40),
       mondo: await this.get('mondo', { fazioni: {}, valute: {}, viaggi: [], notizie: [] }), relazioni: await this.get('relazioni', {}),
       combattimento: await this.get('combattimento', null), aree: await this.get('aree', []), gruppo: await this.get('gruppo', { oro: 0, oggetti: [] }),
@@ -113,6 +113,7 @@ export class Tavolo extends DurableObject {
         case 'dado': return this.dado(io, me, capo, m);
         case 'segnalino': return this.segnalino(io, capo, m);
         case 'vai': if (!capo && (await this.get('campagna')).masterTipo === 'umano') return; return this.vai(io, me, m.nome, m.tipo);
+        case 'scena': return this.scena(io, me.ruolo === 'master', m);
         case 'modifica_luogo': return this.modificaLuogo(io, me, me.ruolo === 'master', m); // solo il master umano; il master AI cambia lo stato con gli eventi
         case 'chat': { const ev = await this.diario('chat', m.testo, io); this.tutti({ t: 'diario', ev }); if (m.alMaster) await this.programmaMaster(true); return; }
         case 'parlato': return this.parlato(io, me, m);
@@ -303,7 +304,7 @@ export class Tavolo extends DurableObject {
     if (!nome) return;
     const c = await this.get('campagna');
     const id = chiaveLuogo(nome);
-    let luogo = await this.get('luogo:' + id);
+    let luogo = await this.luogoCon(id);
     const nuovo = !luogo;
     if (!luogo) {
       const t = ['citta', 'villaggio', 'taverna', 'dungeon', 'foresta', 'grotta', 'castello', 'porto', 'aperto', 'interno'].includes(tipo) ? tipo : indovinaTipo(nome);
@@ -333,14 +334,43 @@ export class Tavolo extends DurableObject {
     this.tutti({ t: 'diario', ev });
   }
 
+  async luogoCon(id) {
+    const l = id ? await this.get('luogo:' + id) : null;
+    if (l && !l.oggetti) { l.oggetti = arreda(l, l.creato + ':' + id); await this.put('luogo:' + id, l); }
+    return l;
+  }
+
+  // Oggetti di scena: il master umano li sposta a mano, il master AI con l'evento "scena"
+  async scena(io, capo, m) {
+    if (!capo) return;
+    const id = await this.get('luogoAttuale'), luogo = await this.luogoCon(id);
+    if (!luogo) return;
+    const o = luogo.oggetti.find(o => o.id === m.oggetto);
+    const xy = v => Math.max(0, Math.min(W - 1, v | 0));
+    let testoEv = '';
+    if (m.azione === 'aggiungi') {
+      const tipo = testo(m.tipo, 20).toLowerCase(); if (!tipo) return;
+      luogo.oggetti.push({ id: 'o' + Date.now().toString(36), tipo, nome: testo(m.nome, 40) || undefined, x: xy(m.x), y: xy(m.y), rot: 0, stato: 'integro', movibile: MOVIBILI.includes(tipo) });
+      testoEv = `compare: ${testo(m.nome, 40) || tipo}`;
+    } else if (o && m.azione === 'sposta') { if (!o.movibile && io !== 'master') return; o.x = xy(m.x); o.y = xy(m.y); }
+    else if (o && ['rompi', 'brucia'].includes(m.azione)) { o.stato = m.azione === 'rompi' ? 'rotto' : 'bruciato'; testoEv = `${o.nome || o.tipo}: ${o.stato}`; }
+    else if (o && m.azione === 'togli') { luogo.oggetti = luogo.oggetti.filter(x => x !== o); testoEv = `${o.nome || o.tipo} non c'è più`; }
+    else return;
+    if (testoEv) luogo.storia = [...(luogo.storia || []), { t: Date.now(), testo: testoEv }].slice(-50);
+    await this.put('luogo:' + id, luogo);
+    this.tutti({ t: 'luogo_mod', luogo });
+  }
+
   async modificaLuogo(io, me, capo, m) {
     if (!capo) return;
     const id = m.luogo || await this.get('luogoAttuale');
-    const luogo = await this.get('luogo:' + id);
+    const luogo = await this.luogoCon(id);
     if (!luogo) return;
     const ed = luogo.edifici.find(e => e.id === m.edificio);
     if (!ed) return;
     ed.stato = ['integro', 'bruciato', 'distrutto', 'danneggiato'].includes(m.stato) ? m.stato : 'distrutto';
+    // gli oggetti dentro l'edificio seguono la sua sorte
+    if (ed.stato === 'bruciato' || ed.stato === 'distrutto') for (const o of luogo.oggetti || []) if (o.x >= ed.x && o.x < ed.x + ed.w && o.y >= ed.y && o.y < ed.y + ed.h) o.stato = ed.stato === 'bruciato' ? 'bruciato' : 'rotto';
     luogo.storia = [...(luogo.storia || []), { t: Date.now(), testo: `${ed.nome}: ${ed.stato}` }].slice(-50);
     await this.put('luogo:' + id, luogo);
     const ev = await this.diario('luogo', `${luogo.nome} — ${ed.nome} ora è ${ed.stato}.`, io);
@@ -505,6 +535,7 @@ Eventi possibili (solo se accadono davvero):
 {"tipo":"esperienza","pg":"<id>","quantita":n}
 {"tipo":"luogo","nome":"nome proprio del luogo dove si spostano","tipoLuogo":"citta|villaggio|taverna|dungeon|foresta|grotta|castello|porto|aperto"}
 {"tipo":"edificio","edificio":"<id edificio del luogo attuale>","stato":"bruciato|distrutto|danneggiato|integro"}
+{"tipo":"scena","azione":"sposta|rompi|brucia|togli|aggiungi","oggetto":"<id oggetto di scena>","tipoOggetto":"botte|cassa|tavolo|...","nome":"...","x":n,"y":n} (oggetti visibili sulla mappa: usalo quando un oggetto viene spostato, rotto, bruciato, preso o compare; per "aggiungi" servono tipoOggetto, x, y)
 {"tipo":"tiro","pg":"<id>","prova":"Percezione","cd":15}
 {"tipo":"nemico","nome":"Goblin","x":n,"y":n,"pf":7,"ca":15} (segnalino sulla mappa, griglia ${W}x${H})
 {"tipo":"combattimento","azione":"inizia|prossimo|fine"} (inizia quando scoppia uno scontro: l'app tira l'iniziativa e gestisce i turni; "prossimo" quando un PNG o nemico ha finito il suo turno; "fine" quando lo scontro è finito)
@@ -516,7 +547,7 @@ Eventi possibili (solo se accadono davvero):
 Durante il combattimento rispetta l'ordine di iniziativa e gioca tu i turni dei nemici quando tocca a loro.`;
     const contesto = {
       memoria_campagna: memoria || '(inizio della campagna)',
-      luogo_attuale: luogo ? { nome: luogo.nome, tipo: luogo.tipo, edifici: luogo.edifici.map(e => ({ id: e.id, nome: e.nome, stato: e.stato })), storia: (luogo.storia || []).slice(-8) } : null,
+      luogo_attuale: luogo ? { nome: luogo.nome, tipo: luogo.tipo, edifici: luogo.edifici.map(e => ({ id: e.id, nome: e.nome, stato: e.stato })), oggetti_di_scena: (luogo.oggetti || []).slice(0, 60).map(o => ({ id: o.id, tipo: o.nome || o.tipo, x: o.x, y: o.y, stato: o.stato !== 'integro' ? o.stato : undefined })), storia: (luogo.storia || []).slice(-8) } : null,
       luoghi_conosciuti: Object.values(luoghi).map(l => l.nome),
       personaggi: pgs,
       nemici_sulla_mappa: Object.entries(await this.get('segnalini', {})).filter(([, s2]) => s2.tipo === 'nemico').map(([id, s2]) => ({ id, nome: s2.nome, x: s2.x, y: s2.y, pf: s2.pf, ca: s2.ca })),
@@ -572,6 +603,7 @@ Durante il combattimento rispetta l'ordine di iniziativa e gioca tu i turni dei 
       case 'esperienza': return pgMod(e.pg, p => { p.px = (p.px || 0) + n; }, `guadagna ${n} punti esperienza`);
       case 'luogo': return this.vai('master', { nome: 'Master' }, e.nome, e.tipoLuogo);
       case 'edificio': return this.modificaLuogo('master', {}, true, { edificio: e.edificio, stato: e.stato });
+      case 'scena': return this.scena('master', true, { azione: e.azione, oggetto: e.oggetto, tipo: e.oggetto_tipo || e.tipoOggetto, nome: e.nome, x: e.x, y: e.y });
       case 'tiro': { const p = await this.get('pg:' + e.pg); this.tutti({ t: 'richiesta_tiro', pg: e.pg, prova: testo(e.prova, 40), cd: e.cd | 0, nome: p?.nome }); return; }
       case 'reputazione': case 'fazione': {
         const mo = await this.get('mondo', { fazioni: {}, valute: {}, viaggi: [], notizie: [] }); const f = testo(e.fazione || e.nome, 40); if (!f) return;
@@ -863,5 +895,63 @@ export function generaLuogo(nome, tipo, seme, nomiInterni) {
     ingresso = { x: 1, y: Math.floor(H / 2) };
   }
   if ('#RTw~'.includes(g[ingresso.y][ingresso.x])) set(ingresso.x, ingresso.y, '_');
-  return { id: chiaveLuogo(nome), nome, tipo, w: W, h: H, celle: g.map(r => r.join('')), edifici, ingresso, storia: [], creato: Date.now() };
+  const l = { id: chiaveLuogo(nome), nome, tipo, w: W, h: H, celle: g.map(r => r.join('')), edifici, ingresso, storia: [], creato: Date.now() };
+  l.oggetti = arreda(l, seme);
+  return l;
+}
+
+// Oggetti di scena (persistenti): strutturali (fissi) o movibili. Tavoli e letti passano dalle caselle agli oggetti.
+export const MOVIBILI = ['tavolo', 'sedia', 'sgabello', 'botte', 'cassa', 'baule', 'forziere', 'carretto', 'panca', 'sacco', 'secchio', 'barca'];
+export function arreda(l, seme) {
+  const R = rng(seme + ':arredi'), ri = (a, b) => a + Math.floor(R() * (b - a + 1));
+  const g = l.celle.map(r => r.split('')), out = [];
+  const pav = ['taverna', 'interno'].includes(l.tipo) ? '=' : '_';
+  const occ = new Set();
+  const metti = (tipo, x, y, rot = 0) => {
+    if (x < 0 || y < 0 || x >= l.w || y >= l.h || occ.has(x + ',' + y)) return false;
+    occ.add(x + ',' + y); out.push({ id: 'o' + (out.length + 1), tipo, x, y, rot, stato: 'integro', movibile: MOVIBILI.includes(tipo) }); return true;
+  };
+  const su = (x, y, cc) => cc.includes(g[y]?.[x]);
+  const vicinoMuro = (x, y) => [[0, -1], [0, 1], [-1, 0], [1, 0]].find(([dx, dy]) => '#wR'.includes(g[y + dy]?.[x + dx] || '#'));
+  // tavoli con sedie, letti con bauli
+  for (let y = 0; y < l.h; y++) for (let x = 0; x < l.w; x++) {
+    if (g[y][x] === 't') { g[y][x] = pav; metti('tavolo', x, y); [[-1, 0, 1], [1, 0, 3], [0, -1, 2], [0, 1, 0]].forEach(([dx, dy, r]) => { if (su(x + dx, y + dy, pav) && R() < 0.75) metti(l.tipo === 'taverna' && R() < 0.4 ? 'sgabello' : 'sedia', x + dx, y + dy, r); }); }
+    if (g[y][x] === 'c') { g[y][x] = pav; metti('letto', x, y); if (su(x, y + 1, pav)) metti('baule', x, y + 1); }
+  }
+  const libere = (cc, fn) => { const v = []; for (let y = 1; y < l.h - 1; y++) for (let x = 1; x < l.w - 1; x++) if (su(x, y, cc) && !occ.has(x + ',' + y) && (!fn || fn(x, y))) v.push([x, y]); return v; };
+  const sparsi = (tipi, n, cc, fn) => { const v = libere(cc, fn); for (let k = 0; k < n && v.length; k++) { const [x, y] = v.splice(Math.floor(R() * v.length), 1)[0]; metti(tipi[ri(0, tipi.length - 1)], x, y, ri(0, 3)); } };
+  const dentro = (nome) => { const e = l.edifici.find(e => e.nome.startsWith(nome)); return e ? (x, y) => x >= e.x && x < e.x + e.w && y >= e.y && y < e.y + e.h : () => false; };
+  if (l.tipo === 'taverna') {
+    for (let x = 2; x < 12; x += 3) metti('botte', x, 1 + (su(x, 1, pav) ? 0 : 2));
+    sparsi(['botte', 'cassa', 'sacco'], 4, pav, vicinoMuro);
+    sparsi(['candelabro'], 3, pav, dentro('Sala'));
+    sparsi(['tappeto'], 1, pav, dentro('Sala'));
+  } else if (l.tipo === 'interno') {
+    sparsi(['scaffale', 'scaffale', 'rastrelliera', 'cassa', 'botte'], 8, pav, vicinoMuro);
+    sparsi(['tappeto', 'candelabro', 'sedia', 'sgabello', 'sacco'], 7, pav);
+  } else if (l.tipo === 'dungeon') {
+    sparsi(['ossa', 'macerie', 'ragnatela', 'cassa', 'botte', 'secchio'], 14, '_');
+    sparsi(['torcia'], 8, '_', vicinoMuro);
+    sparsi(['forziere'], 2, '_', dentro('Sala del tesoro'));
+    sparsi(['altare'], 1, '_', dentro('Altare'));
+    sparsi(['forziere'], 1, '_', dentro('Sala del boss'));
+    sparsi(['colonna'], 3, '_', (x, y) => !vicinoMuro(x, y));
+  } else if (l.tipo === 'grotta') {
+    sparsi(['masso', 'stalagmite', 'funghi', 'ossa', 'masso'], 18, '_');
+  } else if (['citta', 'villaggio', 'porto'].includes(l.tipo)) {
+    const strada = (x, y) => [[0, -1], [0, 1], [-1, 0], [1, 0]].some(([dx, dy]) => g[y + dy]?.[x + dx] === ',');
+    sparsi(['botte', 'cassa', 'carretto', 'lampione', 'panca', 'fieno', 'bancarella'], l.tipo === 'citta' ? 16 : 10, '.', strada);
+    sparsi(['cespuglio', 'masso'], 6, '.');
+    if (l.tipo === 'porto') { sparsi(['cassa', 'botte', 'cassa'], 8, '=,'); sparsi(['barca'], 3, '~', (x, y) => [[0, -1], [0, 1], [-1, 0], [1, 0]].some(([dx, dy]) => g[y + dy]?.[x + dx] === '=')); }
+  } else if (l.tipo === 'castello') {
+    sparsi(['rastrelliera', 'botte', 'cassa', 'statua', 'stendardo', 'carretto'], 12, '_', vicinoMuro);
+    sparsi(['statua'], 2, '_');
+  } else if (l.tipo === 'foresta') {
+    sparsi(['tronco', 'cespuglio', 'masso', 'ceppo', 'funghi', 'cespuglio'], 22, '.');
+    sparsi(['falo'], 1, '.', dentro('Radura'));
+  } else {
+    sparsi(['cespuglio', 'masso', 'tronco', 'ceppo', 'fieno'], 16, '.');
+  }
+  l.celle = g.map(r => r.join(''));
+  return out;
 }
