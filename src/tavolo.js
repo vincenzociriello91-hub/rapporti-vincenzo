@@ -94,6 +94,7 @@ Memoria della campagna: ${memoria || '(nessuna)'}
 Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('\n')}` }] }], generationConfig: { temperature: 0.8, responseMimeType: 'application/json' } }, 'master');
     if (!r.ok) return this.tutti({ t: 'errore', msg: 'Riepilogo non disponibile ora' });
     const out = leggiJSON((await r.json()).candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '') || {};
+    stats.trofei = (await this.statistiche()).trofei;
     const rie = { t: Date.now(), titolo: testo(out.titolo, 100) || `Sessione ${stats.sessione}`, racconto: testo(out.racconto, 1800), stats, img: null };
     rie.img = out.prompt ? await this.illustra(testo(out.prompt, 600), rie.titolo, true) : null;
     const elenco = await this.get('riepiloghi', []); elenco.push(rie); await this.put('riepiloghi', elenco.slice(-30));
@@ -141,6 +142,57 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
     } finally { this.inCorso.delete('v:' + nome); }
   }
 
+  // ---------- avventure pronte: luoghi, PNG, incontri, tesori e segreti preparati ----------
+  async avventuraPerMaster() {
+    const avv = await this.get('avventura', null); if (!avv || !AVVENTURE[avv.id]) return null;
+    return { ...avv, ...AVVENTURE[avv.id] };
+  }
+  async iniziaAvventura(id) {
+    const A = AVVENTURE[id]; if (!A) return;
+    const c = await this.get('campagna');
+    // luoghi preparati una volta, con le loro mappe
+    const idx = await this.get('luoghi', {});
+    for (const sc of A.scene) { const lid = chiaveLuogo(sc.luogo); if (!await this.get('luogo:' + lid)) { const l = generaLuogo(sc.luogo, sc.tipo, c.creata + ':' + lid); await this.put('luogo:' + lid, l); idx[lid] = { nome: l.nome, tipo: l.tipo, prima: Date.now() }; } }
+    await this.put('luoghi', idx);
+    const mo = await this.get('mondo', { fazioni: {}, valute: {}, viaggi: [], notizie: [] });
+    for (const f of A.fazioni || []) mo.fazioni[f.nome] = { reputazione: f.reputazione, descrizione: f.descrizione };
+    await this.put('mondo', mo); this.tutti({ t: 'mondo', mondo: mo });
+    const memoria = await this.get('memoria', '');
+    if (!memoria.includes(A.titolo)) await this.put('memoria', `${memoria}\n**Avventura**: ${A.titolo}. ${A.sinossi}`.trim());
+    await this.put('avventura', { id, scena: 0, iniziata: true });
+    await this.scenaAvventura(A.scene[0].id, true);
+  }
+  async scenaAvventura(idScena, leggi) {
+    const avv = await this.get('avventura', null), A = AVVENTURE[avv?.id]; if (!A) return;
+    const i = A.scene.findIndex(x => x.id === idScena); if (i < 0) return;
+    const sc = A.scene[i];
+    avv.scena = i; avv.iniziata = true; await this.put('avventura', avv);
+    if (chiaveLuogo(sc.luogo) !== await this.get('luogoAttuale')) await this.vai('master', { nome: 'Master' }, sc.luogo, sc.tipo);
+    if (sc.incontro) await this.piazzaNemici(sc.incontro);
+    if (leggi) { const ev = await this.diario('narrazione', sc.leggi, 'master'); this.tutti({ t: 'narra', testo: ev.testo, png: '', chi: 'master' }); }
+    const membri = await this.get('membri', {});
+    for (const ws of this.ctx.getWebSockets()) { const x = this.membroDi(ws); if (x && (membri[x]?.ruolo === 'master' || membri[x]?.admin)) this.invia(ws, { t: 'avventura', avventura: await this.avventuraPerMaster() }); }
+  }
+
+  // ---------- statistiche della serata e di tutta la campagna, trofei ----------
+  async conta(chi, campi) {
+    const c = await this.get('campagna'), st = await this.get('statistiche', { sessione: c.sessione || 1, s: {}, t: {} });
+    if (st.sessione !== (c.sessione || 1)) { st.sessione = c.sessione || 1; st.s = {}; }
+    for (const k of ['s', 't']) { const o = st[k][chi] = st[k][chi] || {}; for (const [campo, v] of Object.entries(campi)) o[campo] = (o[campo] || 0) + v; }
+    await this.put('statistiche', st);
+  }
+  async contaPf(id, prima, dopo) {
+    if (!prima || !dopo || prima.pf === dopo.pf) return;
+    const d = (dopo.pf || 0) - (prima.pf || 0);
+    await this.conta(id, d < 0 ? { danniSubiti: -d, ...(prima.pf > 0 && dopo.pf <= 0 ? { cadute: 1 } : {}) } : { cure: d });
+  }
+  async statistiche() {
+    const st = await this.get('statistiche', { s: {}, t: {} }), membri = await this.get('membri', {}), nomi = {};
+    for (const id of Object.keys(membri)) nomi[id] = (await this.get('pg:' + id))?.nome || membri[id].nome;
+    nomi.gruppo = 'Il gruppo';
+    return { sessione: st.sessione, s: st.s, tot: st.t, nomi, trofei: trofei(st.s, nomi) }; // "tot": "t" è il tipo del messaggio
+  }
+
   // ---------- negozi: il gruppo compra e vende con le monete della scheda ----------
   async apriNegozio(e) {
     const nome = testo(e.nome, 60) || 'Mercante';
@@ -155,7 +207,7 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
     const n = await this.get('negozio'), merce = n?.merci.find(x => x.nome === m.merce), p = await this.get('pg:' + io);
     if (!merce || !p) return;
     if ((p.oro || 0) < merce.prezzo) return this.invia(ws, { t: 'errore', msg: `Non hai abbastanza monete (servono ${merce.prezzo} mo)` });
-    p.oro -= merce.prezzo;
+    p.oro -= merce.prezzo; await this.conta(io, { speso: merce.prezzo });
     const es = (p.equip || []).find(x => x.nome === merce.nome && !x.indossato);
     if (es) es.qta = (es.qta || 1) + 1; else p.equip = [...(p.equip || []), { nome: merce.nome, qta: 1, indossato: false }];
     await this.put('pg:' + io, p);
@@ -305,6 +357,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
       mondo: await this.get('mondo', { fazioni: {}, valute: {}, viaggi: [], notizie: [] }), relazioni: await this.get('relazioni', {}),
       combattimento: await this.get('combattimento', null), aree: await this.get('aree', []), gruppo: await this.get('gruppo', { oro: 0, oggetti: [] }),
       mostri: await this.get('mostri', {}), volti: await this.get('volti', {}), negozio: await this.get('negozio', null),
+      avventura: vedeSegreti ? await this.avventuraPerMaster() : undefined,
       memoria: vedeSegreti ? memoria : undefined, suggerimenti: vedeSegreti ? suggerimenti.slice(-30) : undefined,
       costi: vedeSegreti ? await this.get('costi', null) : undefined
     };
@@ -359,6 +412,10 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
         case 'piazza_nemici': if (!capo) return; return this.piazzaNemici(m.mostri);
         case 'note_master': if (!capo) return; if (typeof m.testo === 'string') await this.put('noteMaster', testo(m.testo, 8000)); return this.invia(ws, { t: 'note_master', testo: await this.get('noteMaster', '') });
         case 'libro': return this.invia(ws, { t: 'libro', ...(await this.libro()) });
+        case 'avventura_inizia': if (!capo) return; return this.iniziaAvventura(m.id);
+        case 'avventura_scena': if (!capo) return; return this.scenaAvventura(m.scena);
+        case 'avventura_leggi': if (!capo) return; { const avv = await this.get('avventura'), sc = AVVENTURE[avv?.id]?.scene.find(x => x.id === m.scena); if (!sc) return; const ev = await this.diario('narrazione', sc.leggi, 'master'); return this.tutti({ t: 'narra', testo: ev.testo, png: '', chi: 'master' }); }
+        case 'statistiche': return this.invia(ws, { t: 'statistiche', ...(await this.statistiche()) });
         case 'sessione_zero': return this.invia(ws, { t: 'sessione_zero', ...(await this.sessioneZero(io, m)) });
         case 'relazione': {
           const rel = await this.get('relazioni', {}); const LIV = ['sconosciuti', 'conoscenti', 'amici', 'amici stretti', 'compagni di vita', 'famiglia', 'rivali'];
@@ -420,9 +477,10 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     const campagna = {
       nome: testo(m.nome, 60) || 'Nuova campagna', regole: m.regole === '3.5' ? '3.5' : '5e',
       ambientazione: testo(m.ambientazione, 400) || 'Fantasy classico', masterTipo: m.masterTipo === 'umano' ? 'umano' : 'ai',
-      invito: codiceCasuale(8), creata: Date.now(), sessione: 1
+      invito: codiceCasuale(8), creata: Date.now(), sessione: 1, solitaria: !!m.solitaria
     };
     await this.put('campagna', campagna);
+    if (AVVENTURE[m.avventura]) await this.put('avventura', { id: m.avventura, scena: 0, iniziata: false });
     const membri = {};
     const ruolo = m.ruolo === 'master' && campagna.masterTipo === 'umano' ? 'master' : 'giocatore';
     const { id, chiave } = await this.nuovoMembro(membri, m.mioNome, ruolo, true);
@@ -475,7 +533,9 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     const per = m.per || io;
     if (!m.pg || typeof m.pg !== 'object') return;
     if (JSON.stringify(m.pg).length > 60000) return;
+    const primaPg = await this.get('pg:' + per);
     await this.put('pg:' + per, m.pg);
+    await this.contaPf(per, primaPg, m.pg);
     this.tutti({ t: 'scheda', per, pg: m.pg, nota: m.nota ? testo(m.nota, 300) : null, da: io });
     if (m.nota) { const ev = await this.diario('scheda', `${m.pg.nome || me.nome}: ${testo(m.nota, 300)}`, io); this.tutti({ t: 'diario', ev }); }
   }
@@ -485,6 +545,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     const r = tiraFormula(String(m.formula || 'd20'), m.modo);
     if (!r) return this.tutti({ t: 'errore', msg: 'formula non valida' }, x => x === io);
     const tiro = { ...r, chi: io, nome: me.nome, motivo: testo(m.motivo, 80), segreto: !!(m.segreto && capo), t: Date.now() };
+    await this.conta(io, { tiri: 1, ...(tiro.critico ? { critici: 1 } : {}), ...(tiro.fallimento ? { fallimenti: 1 } : {}) });
     const dadi = await this.get('dadi', []);
     dadi.push(tiro); while (dadi.length > 100) dadi.shift();
     await this.put('dadi', dadi);
@@ -556,6 +617,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
       seg[mid] = { x: Math.min(W - 1, luogo.ingresso.x + (k % 2)), y: Math.min(H - 1, luogo.ingresso.y + Math.floor(k / 2)), nome: pg?.nome || mm.nome, colore: mm.colore, tipo: 'pg' }; k++;
     }
     // chi abita il luogo: l'oste dietro il bancone, il padrone di casa negli interni
+    if ((await this.get('campagna'))?.solitaria) COMPAGNI.forEach((cmp, i) => { seg[cmp.id] = { x: Math.min(W - 1, luogo.ingresso.x + 1 + i), y: Math.min(H - 1, luogo.ingresso.y + 1), nome: cmp.nome, tipo: 'alleato', colore: '#5cc85c', pf: cmp.pf, ca: cmp.ca }; });
     const banco = luogo.edifici.find(e => e.id === 'bancone');
     if (banco) seg.p_oste = { x: banco.x + 4, y: Math.max(1, banco.y - 1), nome: luogo.png || 'Oste', tipo: 'png', colore: '#bfae86' };
     else if (luogo.png && luogo.tipo === 'interno') { const cx = Math.floor(W / 2), cy = Math.floor(H / 2); for (let r = 0; r < 6 && !seg.p_casa; r++) for (let dy = -r; dy <= r && !seg.p_casa; dy++) for (let dx = -r; dx <= r; dx++) { const x = cx + dx, y = cy + dy; if (luogo.celle[y]?.[x] === '=' && !(luogo.oggetti || []).some(o => o.x === x && o.y === y)) { seg.p_casa = { x, y, nome: luogo.png, tipo: 'png', colore: '#bfae86' }; break; } } }
@@ -619,6 +681,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     const fineTurnoMio = az === 'prossimo' && c?.attivo && c.ordine[c.turno]?.id === io;
     if (!capo && !fineTurnoMio && io !== 'master') return;
     if (az === 'inizia') {
+      await this.conta('gruppo', { combattimenti: 1 });
       const membri = await this.get('membri', {}), seg = await this.get('segnalini', {});
       const ordine = [];
       for (const [id, mm] of Object.entries(membri)) {
@@ -628,6 +691,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
         const d = tiraFormula('d20' + (bonus ? (bonus > 0 ? '+' : '') + bonus : ''));
         ordine.push({ id, nome: p.nome, iniz: d.totale, dado: d.dadi[0], tipo: 'pg' });
       }
+      for (const [id, s2] of Object.entries(seg)) if (s2.tipo === 'alleato') { const d = tiraFormula('d20+2'); ordine.push({ id, nome: s2.nome, iniz: d.totale, dado: d.dadi[0], tipo: 'alleato' }); }
       for (const [id, s2] of Object.entries(seg)) if (s2.tipo === 'nemico') { const d = tiraFormula('d20' + (s2.iniz ? '+' + s2.iniz : '')); ordine.push({ id, nome: s2.nome, iniz: d.totale, dado: d.dadi[0], tipo: 'nemico' }); }
       ordine.sort((a, b) => b.iniz - a.iniz || b.dado - a.dado);
       c = { attivo: true, round: 1, turno: 0, ordine, inizio: Date.now() };
@@ -749,6 +813,8 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
 
   async turnoMaster() {
     const { c, pgs, diario, memoria, luogo, luoghi } = await this.contestoMaster();
+    const avv = await this.get('avventura', null);
+    if (avv && !avv.iniziata && AVVENTURE[avv.id]) return this.iniziaAvventura(avv.id); // l'avventura pronta parte con la sua scena d'apertura
     const regole = c.regole === '3.5' ? 'D&D 3.5 (System Reference Document 3.5)' : 'D&D 5ª edizione (SRD 5.1)';
     const istr = `Sei il Dungeon Master di una partita di Dungeons & Dragons giocata online da amici italiani. Parli in italiano, con voce narrante coinvolgente ma concisa: le tue parole vengono lette ad alta voce.
 Regolamento: ${regole}. Applicalo correttamente (prove, CD, tiri salvezza, attacchi, danni). Ambientazione scelta: ${c.ambientazione}.
@@ -781,8 +847,11 @@ Eventi possibili (solo se accadono davvero):
 {"tipo":"fazione","nome":"Gilda dei Ladri","descrizione":"..."} (nuova fazione) e {"tipo":"reputazione","fazione":"...","delta":n,"motivo":"..."} (da -100 a +100: i PNG delle fazioni trattano il gruppo di conseguenza)
 {"tipo":"tempo","giorni":n,"ora":0-23,"stagione":"primavera|estate|autunno|inverno","meteo":"sereno|nuvoloso|pioggia|temporale|neve|nebbia"} (quando passa il tempo o cambia il tempo atmosferico: la mappa mostra luce del giorno, notte, ombre del sole, pioggia, neve e nebbia; tieni coerenti ora e meteo con la narrazione)
 {"tipo":"valuta","nome":"Corone di Argentea","cambio":0.5} (valuta locale e quanto vale in monete d'oro) e {"tipo":"valuta_pg","pg":"<id>","valuta":"...","quantita":n}
-Durante il combattimento rispetta l'ordine di iniziativa e gioca tu i turni dei nemici quando tocca a loro.`;
+Durante il combattimento rispetta l'ordine di iniziativa e gioca tu i turni dei nemici quando tocca a loro.${c.solitaria ? `
+PARTITA IN SOLITARIA: c'è un solo giocatore. Interpreti anche i suoi compagni alleati (${COMPAGNI.map(x => x.nome + ': ' + x.carattere).join('; ')}): falli parlare con la loro personalità, agire e combattere nel loro turno (descrivi le azioni e usa danno_nemico per i loro colpi), senza rubare la scena al giocatore. Dai qualche suggerimento in più su cosa si può fare e rispondi sempre subito.` : ''}${avv ? `
+AVVENTURA PRONTA "${AVVENTURE[avv.id].titolo}": seguila (trovi scene, segreti e scena attuale in "avventura"), ma lascia libertà ai giocatori e adattala alle loro scelte. Quando il gruppo arriva alla scena successiva usa {"tipo":"avventura","scena":"<id della scena>"}: l'app li porta nel luogo e mette i nemici della scena; poi tu decidi se e quando inizia il combattimento.` : ''}`;
     const contesto = {
+      avventura: avv ? { titolo: AVVENTURE[avv.id].titolo, sinossi: AVVENTURE[avv.id].sinossi, scena_attuale: AVVENTURE[avv.id].scene[avv.scena]?.id, scene: AVVENTURE[avv.id].scene.map(x => ({ id: x.id, luogo: x.luogo, obiettivo: x.obiettivo, png: x.png, indizi: x.indizi, incontro: x.incontro?.map(n => `${n.numero} ${n.nome}`).join(', ') || null, tesoro: x.tesoro || null })), segreti: AVVENTURE[avv.id].segreti, ricompensa: AVVENTURE[avv.id].ricompensa } : undefined,
       memoria_campagna: memoria || '(inizio della campagna)',
       luogo_attuale: luogo ? { nome: luogo.nome, tipo: luogo.tipo, edifici: luogo.edifici.map(e => ({ id: e.id, nome: e.nome, stato: e.stato })), oggetti_di_scena: (luogo.oggetti || []).slice(0, 60).map(o => ({ id: o.id, tipo: o.nome || o.tipo, x: o.x, y: o.y, stato: o.stato !== 'integro' ? o.stato : undefined })), storia: (luogo.storia || []).slice(-8) } : null,
       luoghi_conosciuti: Object.values(luoghi).map(l => l.nome),
@@ -827,7 +896,9 @@ Durante il combattimento rispetta l'ordine di iniziativa e gioca tu i turni dei 
     if (!e || typeof e !== 'object') return;
     const pgMod = async (id, fn, nota) => {
       const p = await this.get('pg:' + id); if (!p) return;
+      const primaPf = { pf: p.pf };
       fn(p); await this.put('pg:' + id, p);
+      await this.contaPf(id, primaPf, p);
       this.tutti({ t: 'scheda', per: id, pg: p, nota, da: 'master' });
       const ev = await this.diario('scheda', `${p.nome}: ${nota}`, 'master'); this.tutti({ t: 'diario', ev });
     };
@@ -842,6 +913,7 @@ Durante il combattimento rispetta l'ordine di iniziativa e gioca tu i turni dei 
       case 'luogo': return this.vai('master', { nome: 'Master' }, e.nome, e.tipoLuogo);
       case 'edificio': return this.modificaLuogo('master', {}, true, { edificio: e.edificio, stato: e.stato });
       case 'scena': return this.scena('master', true, { azione: e.azione, oggetto: e.oggetto, tipo: e.oggetto_tipo || e.tipoOggetto, nome: e.nome, x: e.x, y: e.y });
+      case 'avventura': return this.scenaAvventura(e.scena);
       case 'negozio': if (e.chiudi) { await this.put('negozio', null); return this.tutti({ t: 'negozio', negozio: null }); } return this.apriNegozio(e);
       case 'illustra': this.ctx.waitUntil(e.prompt ? this.illustra(testo(e.prompt, 600), testo(e.didascalia, 200)) : this.illustraScena()); return;
       case 'tiro': { const p = await this.get('pg:' + e.pg); this.tutti({ t: 'richiesta_tiro', pg: e.pg, prova: testo(e.prova, 40), cd: e.cd | 0, nome: p?.nome }); return; }
@@ -861,7 +933,7 @@ Durante il combattimento rispetta l'ordine di iniziativa e gioca tu i turni dei 
       case 'danno_nemico': {
         const seg = await this.get('segnalini', {}); const s2 = seg[e.nemico]; if (!s2) return;
         s2.pf = (s2.pf ?? 10) - n;
-        if (s2.pf <= 0) { delete seg[e.nemico]; const c = await this.get('combattimento'); if (c?.attivo) await this.combattimento('master', {}, true, { azione: 'togli', id: e.nemico }); const ev = await this.diario('combattimento', `${s2.nome} è sconfitto.`, 'master'); this.tutti({ t: 'diario', ev }); }
+        if (s2.pf <= 0) { await this.conta('gruppo', { nemici: 1 }); delete seg[e.nemico]; const c = await this.get('combattimento'); if (c?.attivo) await this.combattimento('master', {}, true, { azione: 'togli', id: e.nemico }); const ev = await this.diario('combattimento', `${s2.nome} è sconfitto.`, 'master'); this.tutti({ t: 'diario', ev }); }
         await this.put('segnalini', seg); this.tutti({ t: 'segnalini', segnalini: seg }); return;
       }
       case 'png': return e.via ? this.segnalino('master', true, { id: 'p_' + testo(e.nome, 20).replace(/\W+/g, '_'), rimuovi: true }) : this.segnalino('master', true, { id: 'p_' + testo(e.nome, 20).replace(/\W+/g, '_'), x: e.x, y: e.y, nome: testo(e.nome, 40), colore: '#bfae86', tipo: 'png' });
@@ -1004,6 +1076,47 @@ export function wav16k(pcm, rate) {
 }
 // Illustrazioni: FLUX.1 schnell su Workers AI (quota gratuita di Cloudflare). IMG_FINTA nelle prove.
 const SCENE_EN = { citta: 'a bustling medieval fantasy city with stone houses, cobblestone streets and market stalls', villaggio: 'a small medieval fantasy village with thatched cottages and dirt roads', porto: 'a medieval fantasy harbor with wooden docks, ships and warehouses', taverna: 'the cozy interior of a medieval fantasy tavern with a roaring fireplace, wooden tables and patrons', dungeon: 'a dark ancient dungeon with stone corridors lit by flickering torches', grotta: 'a vast natural cave with stalagmites, glowing mushrooms and underground pools', castello: 'a mighty medieval castle with towers, banners and a courtyard', foresta: 'a dense ancient forest with towering trees, mist and a winding path', interno: 'the interior of a medieval fantasy building with furniture and candlelight', aperto: 'open medieval fantasy countryside with rolling hills and a dirt road' };
+// Compagni della partita in solitaria, interpretati dal master AI
+export const COMPAGNI = [
+  { id: 'a_mira', nome: 'Mira la ranger', carattere: 'elfa silenziosa e pratica, ottima con l\'arco, diffida delle città', pf: 13, ca: 14 },
+  { id: 'a_tobia', nome: 'Fra\' Tobia il chierico', carattere: 'umano chiacchierone e goloso, cura le ferite e cita proverbi', pf: 12, ca: 16 }
+];
+// Avventure pronte (testi originali)
+export const AVVENTURE = {
+  miniera: {
+    titolo: 'La miniera dei goblin',
+    sinossi: 'Da una settimana la miniera di Pietrarossa è caduta in mano ai goblin del capo Rugnak: i minatori sono fuggiti, uno di loro (Brann, un nano) è prigioniero e il villaggio rischia la fame. La sindaca Gerlinda offre una ricompensa a chi libera la miniera. Avventura per personaggi di livello 1-3, da giocare in una serata.',
+    fazioni: [{ nome: 'Goblin di Rugnak', reputazione: -60, descrizione: 'banda di goblin guidata dall\'hobgoblin Rugnak, occupa la miniera di Pietrarossa' }, { nome: 'Villaggio di Pietrarossa', reputazione: 10, descrizione: 'minatori e contadini, spaventati ma ospitali' }],
+    segreti: ['Rugnak non è il vero capo: prende ordini da un bugbear, Grumsh, che vuole usare la miniera come covo per razziare la valle.', 'Brann ha scoperto una vena d\'argento: per questo i goblin lo tengono vivo e lo fanno scavare.', 'Il vecchio Ulrico, il fabbro del villaggio, vende di nascosto chiodi e lanterne ai goblin in cambio di argento: se scoperto, chiede di non dirlo alla sindaca.', 'Nel bosco i goblin hanno lasciato un carretto rovesciato con le loro tracce: porta dritto all\'ingresso secondario della miniera, che evita le trappole.'],
+    ricompensa: '50 monete d\'oro a testa dalla sindaca Gerlinda, il martello magico di Brann (arma +1) e 300 PX a personaggio; l\'argento della vena, se diviso con il villaggio, rende il gruppo benvoluto per sempre.',
+    scene: [
+      { id: 'villaggio', luogo: 'Villaggio di Pietrarossa', tipo: 'villaggio', obiettivo: 'Il gruppo arriva al villaggio, sente le voci sui goblin e viene mandato dalla sindaca.', png: 'Gerlinda la sindaca (energica, stanca, onesta); bambini che giocano ai goblin', indizi: 'carri vuoti, botteghe chiuse, i minatori bevono nella taverna invece di lavorare',
+        leggi: 'La strada sale tra campi di segale fino a Pietrarossa, un villaggio di case basse con i tetti di ardesia, aggrappato alla montagna. Dovrebbe essere ora di lavoro, eppure i carri dei minatori sono fermi e vuoti, e le botteghe hanno le imposte chiuse. Una bambina vi fissa da dietro un recinto, poi corre via gridando: "Altri forestieri! Forse questi i goblin li ammazzano davvero!"' },
+      { id: 'taverna', luogo: 'Taverna del Mulo Stanco', tipo: 'taverna', obiettivo: 'La sindaca offre l\'incarico; i minatori raccontano della miniera, delle trappole all\'ingresso principale e di Brann prigioniero.', png: 'Tobia l\'oste (gentile, pauroso); Gerlinda la sindaca; Hilde, minatrice ferita che conosce la miniera', indizi: 'Hilde disegna una mappa sommaria: ingresso principale con trappole, un ingresso secondario nel Bosco dei Corvi che solo i goblin usano',
+        leggi: 'Nella Taverna del Mulo Stanco il fuoco è acceso ma nessuno ride. Una dozzina di minatori fissa i boccali in silenzio. Dietro il bancone, l\'oste Tobia vi saluta con un sorriso che vorrebbe essere allegro. Al tavolo vicino al camino una donna robusta con la fascia da sindaca si alza in piedi: "Se siete qui per lavorare, ho un lavoro da offrirvi. Pagato bene."' },
+      { id: 'bosco', luogo: 'Bosco dei Corvi', tipo: 'foresta', obiettivo: 'Seguendo le tracce dei goblin il gruppo trova il carretto rovesciato e due lupi addestrati dai goblin.', png: 'nessuno: corvi che gracchiano', indizi: 'carretto rovesciato con sacchi di grano rubati e impronte piccole che portano all\'ingresso secondario della miniera',
+        incontro: [{ nome: 'Lupo', numero: 2, gs: '1/4', pf: 11, ca: 13 }],
+        leggi: 'Il Bosco dei Corvi merita il suo nome: centinaia di uccelli neri gracchiano dai rami, e tacciono di colpo al vostro passaggio. Sul sentiero, un carretto è rovesciato su un fianco, i sacchi di grano squarciati. Tutt\'intorno, piccole impronte di piedi nudi. E poi un ringhio basso, tra i cespugli.' },
+      { id: 'miniera', luogo: 'Miniera di Pietrarossa', tipo: 'dungeon', obiettivo: 'Il gruppo entra nella miniera (dall\'ingresso principale con le trappole o da quello secondario), affronta le sentinelle goblin e trova Brann incatenato.', png: 'Brann il minatore nano (prigioniero, testardo, grato); goblin sentinelle che litigano tra loro', indizi: 'Brann racconta della vena d\'argento e che Rugnak ha paura di qualcuno più grosso nella sala in fondo',
+        incontro: [{ nome: 'Goblin', numero: 4, gs: '1/4', pf: 7, ca: 15 }],
+        leggi: 'L\'aria della miniera sa di ferro e di fumo. Le travi di sostegno scricchiolano sopra le vostre teste, e da qualche parte più in basso arriva un rumore regolare di picconi, accompagnato da risate stridule. Una torcia, piantata male nella roccia, illumina quattro figure piccole e verdi che giocano a dadi con delle ossa.' },
+      { id: 'boss', luogo: 'Sala profonda della miniera', tipo: 'grotta', obiettivo: 'Scontro finale con Rugnak e il suo padrone, il bugbear Grumsh, vicino alla vena d\'argento. Poi il ritorno al villaggio e la ricompensa.', png: 'Rugnak l\'hobgoblin (arrogante, vigliacco quando perde); Grumsh il bugbear (silenzioso, brutale)', indizi: 'se Rugnak viene risparmiato tradisce Grumsh',
+        incontro: [{ nome: 'Rugnak l\'hobgoblin', numero: 1, gs: '1/2', pf: 22, ca: 18 }, { nome: 'Grumsh il bugbear', numero: 1, gs: '1', pf: 27, ca: 16 }],
+        tesoro: '150 monete d\'oro, 2 pozioni di guarigione, il martello di Brann (arma +1), un sacco di argento grezzo (200 mo)',
+        leggi: 'La galleria si apre in una caverna enorme. Sulle pareti, una lunga vena scintillante riflette la luce di un braciere: argento, tanto argento. Davanti al braciere, un hobgoblin con un elmo troppo grande sbraita ordini. Ma è l\'ombra alle sue spalle a farvi gelare il sangue: qualcosa di grosso, peloso, che si alza lentamente impugnando una mazza chiodata.' }
+    ]
+  }
+};
+// Trofei della serata: a chi ha il numero più alto in ogni voce (almeno 1)
+const TROFEI = [['critici', 'Mano d\'oro', n => `${n} colpi critici`], ['fallimenti', 'Nato sotto una cattiva stella', n => `${n} fallimenti critici`], ['danniSubiti', 'Muro vivente', n => `${n} danni incassati`], ['cadute', 'Bacio del pavimento', n => n === 1 ? 'a terra una volta' : `a terra ${n} volte`], ['cure', 'Pellaccia', n => `${n} punti ferita recuperati`], ['speso', 'Spendaccione', n => `${n} monete spese`], ['tiri', 'Lanciatore instancabile', n => `${n} dadi tirati`]];
+export function trofei(s, nomi) {
+  const out = [];
+  for (const [campo, titolo, motivo] of TROFEI) {
+    const [chi, v] = Object.entries(s || {}).filter(([id]) => id !== 'gruppo').map(([id, o]) => [id, o[campo] || 0]).sort((a, b) => b[1] - a[1])[0] || [];
+    if (chi && v > 0) out.push({ titolo, chi: nomi[chi] || chi, motivo: motivo(v) });
+  }
+  return out;
+}
 // Cataloghi dei negozi (prezzi dell'SRD 5.1 in monete d'oro, arrotondati)
 export const CATALOGHI = {
   emporio: [['Razioni (1 giorno)', 1], ['Corda (15 m)', 1], ['Torcia', 1], ['Zaino', 2], ['Otre', 1], ['Sacco a pelo', 1], ['Lanterna', 5], ['Olio (ampolla)', 1], ['Kit da guaritore', 5], ['Acciarino', 1], ['Chiodi da rocciatore (10)', 1], ['Rampino', 2]],
