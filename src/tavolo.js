@@ -509,7 +509,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     // se Gemini non risponde si disegna comunque il luogo, senza lasciare il gruppo ad aspettare
     const prompt = t.match(/PROMPT:\s*(.+)/i)?.[1] || `Detailed fantasy D&D illustration of ${luogo?.nome || 'an adventuring party'} (${luogo?.tipo || 'tavern'}), cinematic lighting, painterly, atmospheric`, did = t.match(/DIDASCALIA:\s*(.+)/i)?.[1];
     const ok = await this.illustra(prompt, did || luogo?.nome || 'La scena', forza, forza);
-    if (!ok && forza) this.tutti({ t: 'avviso', msg: /4006|429|402|quota|error data/i.test(this.erroreImg || '') ? "Per oggi le immagini gratuite sono finite: tornano dopo l'una di notte. La partita va avanti normalmente." : "L'illustrazione non è riuscita: riprova tra qualche minuto", motivo: this.erroreImg || null });
+    if (!ok && forza) this.tutti({ t: 'avviso', msg: /4006|429|402|quota|error data/i.test(this.erroreImg || '') ? "Immagini gratuite finite per oggi: tornano dopo l'una di notte." : "L'illustrazione non è riuscita: riprova tra qualche minuto", motivo: this.erroreImg || null });
   }
 
   // ---------- connettore per Claude: lettura dello stato e preparazione delle sessioni ----------
