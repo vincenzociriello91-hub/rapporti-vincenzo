@@ -958,6 +958,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
       for (const [id, s2] of Object.entries(seg)) if (s2.tipo === 'alleato') { const d = tiraFormula('d20+2'); ordine.push({ id, nome: s2.nome, iniz: d.totale, dado: d.dadi[0], tipo: 'alleato' }); }
       for (const [id, s2] of Object.entries(seg)) if (s2.tipo === 'nemico') { const d = tiraFormula('d20' + (s2.iniz ? '+' + s2.iniz : '')); ordine.push({ id, nome: s2.nome, iniz: d.totale, dado: d.dadi[0], tipo: 'nemico' }); }
       ordine.sort((a, b) => b.iniz - a.iniz || b.dado - a.dado);
+      if (!ordine.length) { if (io !== 'master') this.invia(this.wsDi(io), { t: 'errore', msg: 'Non c\'è nessuno da mettere in ordine: servono personaggi o nemici sulla mappa' }); return; }
       c = { attivo: true, round: 1, turno: 0, ordine, inizio: Date.now() };
       await this.diario('combattimento', `Inizia il combattimento! Ordine: ${ordine.map(o => `${o.nome} (${o.iniz})`).join(', ')}.`, io);
     } else if (!c?.attivo) return;
@@ -1714,7 +1715,19 @@ export function generaLuogo(nome, tipo, seme, nomiInterni) {
   } else {
     for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (R() < 0.08) g[y][x] = R() < 0.5 ? 'T' : 'R';
     rett(0, Math.floor(H / 2), W, 2, ',');
-    if (R() < 0.7) casa(ri(4, W - 10), ri(2, 5), 5, 4, 'Casolare');
+    const n = String(nome).toLowerCase();
+    if (/ponte|viadott|guado|fiume|torrente|burron|gola|precipizi|canyon/.test(n)) {
+      // acqua (o il fondo della gola) che taglia la strada, con il ponte di legno sopra
+      let fx = ri(13, 17); for (let yy = 0; yy < H; yy++) { rett(fx, yy, 3, 1, '~'); if (R() < 0.25) fx = Math.max(10, Math.min(19, fx + ri(-1, 1))); }
+      for (let xx = 0; xx < W; xx++) for (const yy of [Math.floor(H / 2), Math.floor(H / 2) + 1]) if (g[yy][xx] === '~') set(xx, yy, '=');
+      if (/spezzat|crollat|rott|distrutt|caduto/.test(n)) {
+        // ponte crollato a metà: si passa solo dal guado più a valle
+        for (let xx = 0; xx < W; xx++) if (g[Math.floor(H / 2)][xx] === '=' && g[Math.floor(H / 2)][xx - 1] === '=' && g[Math.floor(H / 2)][xx + 1] === '=') { set(xx, Math.floor(H / 2), '~'); set(xx, Math.floor(H / 2) + 1, '~'); }
+        const gy = H - 4; for (let xx = 0; xx < W; xx++) if (g[gy][xx] === '~') set(xx, gy, ',');
+        edifici.push({ id: 'guado', nome: 'Guado', x: fx, y: gy, w: 3, h: 1, stato: 'integro' });
+      }
+      edifici.push({ id: 'ponte', nome: /viadott/.test(n) ? 'Viadotto' : 'Ponte', x: fx, y: Math.floor(H / 2), w: 3, h: 2, stato: /spezzat|crollat|rott|distrutt|caduto/.test(n) ? 'distrutto' : 'integro' });
+    } else if (R() < 0.7) casa(ri(4, W - 10), ri(2, 5), 5, 4, 'Casolare');
     ingresso = { x: 1, y: Math.floor(H / 2) };
   }
   if ('#RTw~'.includes(g[ingresso.y][ingresso.x])) set(ingresso.x, ingresso.y, '_');
