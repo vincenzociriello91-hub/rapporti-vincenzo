@@ -43,6 +43,7 @@ const PROMEMORIA = [['giorno', 86400000], ['ora', 3600000]]; // promemoria il gi
 export function b64url(b) { let s = ''; for (const x of b) s += String.fromCharCode(x); return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
 // cosa entra nella copia della campagna (non i membri con le loro chiavi, non le immagini)
 const COPIA = /^(pg:|luogo:|note:)|^(campagna|diario|memoria|mondo|png|luoghi|luogoAttuale|segnalini|gruppo|missioni|voto|enigma|nemesi|scelte|minacce|base|serate|riepiloghi|memoriale|relazioni|statistiche|avventura|tattiche|dungeonGiorno|aree|combattimento|negozio|noteMaster|daRiassumere)$/;
+const PER_SPETTATORI = ['reazione', 'stato', 'riepiloghi', 'libro', 'statistiche', 'traduci', 'esci', 'impostazioni', 'rtc', 'suggerimento'];
 const SILENZIO = 4 * 60000; // dopo quanti minuti di silenzio il master AI fa succedere qualcosa
 const REAZIONI = ['👏', '😂', '😱', '🔥', '❤️', '🎲'];
 const LINGUE = { it: 'italiano', en: 'inglese', es: 'spagnolo', fr: 'francese', de: 'tedesco' };
@@ -63,7 +64,7 @@ const testo = (s, max = 2000) => String(s ?? '').slice(0, max);
 const COLORI = ['#e8b04b', '#5b8fd9', '#c97bd0', '#6cc08a', '#e2735f', '#4fc3c8', '#d9d36b', '#a98be8'];
 
 export class Tavolo extends DurableObject {
-  reazioni = new Map(); traduzioni = new Map(); // in memoria: si azzerano quando la stanza dorme
+  reazioni = new Map(); traduzioni = new Map(); raffica = new Map(); // in memoria: si azzerano quando la stanza dorme
   async fetch(req) {
     if (req.method === 'POST' && req.headers.get('x-tavolo-interno') === '1') return this.interno(await req.json());
     const md = new URL(req.url).pathname.match(/\/media\/(voce|img)\/([a-z0-9]{4,30})$/);
@@ -503,9 +504,11 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
     pg.famiglia = campi;
     const c = await this.get('campagna');
     const r = await this.g({ contents: [{ parts: [{ text: `Scrivi in italiano la storia di ${pg.nome}, ${pg.razza} ${pg.classe} in una campagna di D&D (${c.ambientazione}), in terza persona, massimo 120 parole, con un aggancio per l'avventura. Origini: ${campi.origini || '?'}. Famiglia (albero genealogico): ${campi.famiglia || '?'}. Segno particolare: ${campi.segno || '?'}. Cosa sogna o teme: ${campi.sogno || '?'}. Rispondi solo con il testo.` }] }], generationConfig: { temperature: 0.9 } }, 'regole');
-    if (r.ok) pg.storia = testo((await r.json()).candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '', 1200).trim() || pg.storia;
-    await this.put('pg:' + io, pg);
-    this.tutti({ t: 'scheda', per: io, pg });
+    const storia = r.ok ? testo((await r.json()).candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '', 1200).trim() : '';
+    const ora = await this.get('pg:' + io); if (!ora) return; // riletta: nel frattempo la scheda può essere cambiata
+    ora.famiglia = campi; if (storia) ora.storia = storia;
+    await this.put('pg:' + io, ora);
+    this.tutti({ t: 'scheda', per: io, pg: ora });
   }
   // un personaggio caduto va nel memoriale con le sue imprese; il giocatore può creare un erede
   async caduto(chi, motivo) {
@@ -709,7 +712,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     const vedeSegreti = io && (io.ruolo === 'master' || io.admin);
     const membriPubblici = Object.fromEntries(Object.entries(membri).map(([id, m]) => [id, { nome: m.nome, ruolo: m.ruolo, colore: m.colore, admin: !!m.admin, presenze: m.presenze || 0 }]));
     return {
-      campagna: { ...campagna, invito: vedeSegreti || campagna.masterTipo === 'ai' ? campagna.invito : undefined },
+      campagna: { ...campagna, invito: vedeSegreti || (campagna.masterTipo === 'ai' && io?.ruolo !== 'spettatore') ? campagna.invito : undefined, invitoSpettatori: io && io.ruolo !== 'spettatore' ? campagna.invitoSpettatori : undefined },
       membri: membriPubblici, online: this.online(), pg,
       luoghi: luoghiIdx, luogo: await this.luogoCon(attuale),
       segnalini, diario: diario.slice(-120), dadi: dadi.filter(d => !d.segreto || vedeSegreti || d.chi === perMembro).slice(-40),
@@ -738,6 +741,10 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
       const me = membri[io];
       if (!me) return this.invia(ws, { t: 'errore', msg: 'membro sconosciuto' });
       const capo = me.ruolo === 'master' || me.admin;
+      // freno: al massimo 40 messaggi ogni 5 secondi per persona (i segnali della voce non contano)
+      if (m.t !== 'rtc') { const ora = Date.now(), f = this.raffica.get(io) || { t: ora, n: 0 }; if (ora - f.t > 5000) { f.t = ora; f.n = 0; } f.n++; this.raffica.set(io, f); if (f.n > 40) return f.n === 41 ? this.invia(ws, { t: 'errore', msg: 'Troppi messaggi insieme: aspetta qualche secondo' }) : undefined; }
+      // gli spettatori (amici esterni, TV) guardano e basta: niente che cambi la partita o consumi il master AI
+      if (me.ruolo === 'spettatore' && !PER_SPETTATORI.includes(m.t)) return;
       switch (m.t) {
         case 'scheda': return this.scheda(io, me, capo, m);
         case 'dado': return this.dado(io, me, capo, m);
@@ -786,7 +793,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
         case 'narra': if (!capo) return; { const ev = await this.diario('narrazione', m.testo, io); return this.tutti({ t: 'narra', testo: ev.testo, png: testo(m.png, 40), chi: io }); }
         case 'rtc': return this.rtc(io, m);
         case 'impostazioni': return this.impostazioni(ws, io, me, capo, m);
-        case 'nuovo_invito': if (!capo) return; { const c = await this.get('campagna'); c.invito = codiceCasuale(8); await this.put('campagna', c); return this.tutti({ t: 'invito', invito: c.invito }, x => { const mm = membri[x]; return mm && (mm.ruolo === 'master' || mm.admin || c.masterTipo === 'ai'); }); }
+        case 'nuovo_invito': if (!capo) return; { const c = await this.get('campagna'); c.invito = codiceCasuale(8); c.invitoSpettatori = codiceCasuale(10); await this.put('campagna', c); return this.tutti({ t: 'invito', invito: c.invito, invitoSpettatori: c.invitoSpettatori }, x => { const mm = membri[x]; return mm && (mm.ruolo === 'master' || mm.admin || c.masterTipo === 'ai'); }); }
         case 'suggerimento': { const s = await this.get('suggerimenti', []); s.push({ t: Date.now(), chi: me.nome, testo: testo(m.testo, 1500) }); while (s.length > 200) s.shift(); await this.put('suggerimenti', s); return this.invia(ws, { t: 'ok', cosa: 'suggerimento' }); }
         case 'interpreta': return this.interpreta(ws, io, me, m);
         case 'regola': return this.regola(ws, me, m);
@@ -809,7 +816,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
           if (!me.admin || !m.dati || typeof m.dati !== 'object') return;
           const c = await this.get('campagna'), voci = Object.entries(m.dati).filter(([k]) => COPIA.test(k));
           if (!voci.length) return this.invia(ws, { t: 'errore', msg: 'Il file non contiene una campagna' });
-          for (const [k, v] of voci) await this.put(k, k === 'campagna' ? { ...v, invito: c.invito, creata: c.creata, prova: c.prova } : v); // l'invito resta quello attuale
+          for (const [k, v] of voci) await this.put(k, k === 'campagna' ? { ...v, invito: c.invito, invitoSpettatori: c.invitoSpettatori, creata: c.creata, prova: c.prova } : v); // l'invito resta quello attuale
           await this.diario('sistema', `${me.nome} ripristina la campagna da una copia salvata.`);
           for (const s2 of this.ctx.getWebSockets()) { const x = this.membroDi(s2); if (x) this.invia(s2, { t: 'stato', stato: await this.statoCompleto(x) }); }
           return;
@@ -840,7 +847,8 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
           if (!membri[chi] || (chi !== io && membri[chi].admin)) return;
           const nome = membri[chi].nome;
           delete membri[chi]; await this.put('membri', membri); await this.ctx.storage.delete('pg:' + chi);
-          const seg = await this.get('segnalini', {}); delete seg[chi]; await this.put('segnalini', seg);
+          const seg = await this.get('segnalini', {}); for (const k of Object.keys(seg)) if (k === chi || k.startsWith(chi + '_c')) delete seg[k]; await this.put('segnalini', seg);
+          const iscritti = await this.get('push', {}); if (iscritti[chi]) { delete iscritti[chi]; await this.put('push', iscritti); }
           const ev = await this.diario('sistema', `${nome} lascia la campagna.`);
           for (const s2 of this.ctx.getWebSockets()) { const x = this.membroDi(s2); if (x === chi) { s2.serializeAttachment({ membro: null }); try { s2.close(1000, 'uscito'); } catch {} } }
           if (!Object.keys(membri).length && (await this.get('campagna'))?.prova) { await this.ctx.storage.deleteAlarm(); await this.ctx.storage.deleteAll(); return; } // partita bot finita: niente resta sul server
@@ -864,7 +872,8 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
 
   async accetta(ws, id, membri, extra = {}) {
     ws.serializeAttachment({ membro: id, vede: membri[id]?.ruolo === 'master' || !!membri[id]?.admin });
-    const sess = (await this.get('campagna'))?.sessione || 1; // una presenza per ogni sessione a cui partecipa: sblocca le cornici
+    const camp = await this.get('campagna'); if (camp && !camp.invitoSpettatori) { camp.invitoSpettatori = codiceCasuale(10); await this.put('campagna', camp); } // campagne nate prima del link per spettatori
+    const sess = camp?.sessione || 1; // una presenza per ogni sessione a cui partecipa: sblocca le cornici
     if (membri[id].sessioneVista !== sess) { membri[id].presenze = (membri[id].presenze || 0) + 1; membri[id].sessioneVista = sess; await this.put('membri', membri); }
     this.invia(ws, { t: 'benvenuto', io: id, ...extra, stato: await this.statoCompleto(id) });
     const visto = membri[id].visto || membri[id].dal || 0, persi = (await this.get('riepiloghi', [])).filter(r => r.t > visto);
@@ -887,7 +896,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     const campagna = {
       nome: testo(m.nome, 60) || 'Nuova campagna', regole: m.regole === '3.5' ? '3.5' : '5e',
       ambientazione: testo(m.ambientazione, 400) || 'Fantasy classico', masterTipo: m.masterTipo === 'umano' ? 'umano' : 'ai',
-      invito: codiceCasuale(8), creata: Date.now(), sessione: 1, solitaria: !!m.solitaria, prova: !!m.prova,
+      invito: codiceCasuale(8), invitoSpettatori: codiceCasuale(10), creata: Date.now(), sessione: 1, solitaria: !!m.solitaria, prova: !!m.prova,
       sfida: m.sfida?.titolo ? { titolo: testo(m.sfida.titolo, 80), obiettivo: testo(m.sfida.obiettivo, 400), settimana: testo(m.sfida.settimana, 12) } : undefined
     };
     await this.put('campagna', campagna);
@@ -903,10 +912,12 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
   async entra(ws, m) {
     const c = await this.get('campagna');
     if (!c) return this.invia(ws, { t: 'errore', msg: 'campagna inesistente', codice: 'inesistente' });
-    if (!m.invito || m.invito !== c.invito) return this.invia(ws, { t: 'errore', msg: 'invito non valido o scaduto: chiedi un nuovo QR', codice: 'invito' });
+    const soloGuardare = !!m.invito && m.invito === c.invitoSpettatori; // il link per gli amici esterni fa entrare solo come spettatori
+    if (!m.invito || (m.invito !== c.invito && !soloGuardare)) return this.invia(ws, { t: 'errore', msg: 'invito non valido o scaduto: chiedi un nuovo QR', codice: 'invito' });
     const membri = await this.get('membri', {});
-    if (Object.keys(membri).length >= 12) return this.invia(ws, { t: 'errore', msg: 'stanza piena' });
-    let ruolo = ['giocatore', 'spettatore', 'master'].includes(m.ruolo) ? m.ruolo : 'giocatore';
+    let ruolo = soloGuardare ? 'spettatore' : ['giocatore', 'spettatore', 'master'].includes(m.ruolo) ? m.ruolo : 'giocatore';
+    const quanti = Object.values(membri).filter(x => (x.ruolo === 'spettatore') === (ruolo === 'spettatore')).length;
+    if (quanti >= (ruolo === 'spettatore' ? 20 : 12)) return this.invia(ws, { t: 'errore', msg: 'stanza piena' });
     if (ruolo === 'master' && (c.masterTipo !== 'umano' || Object.values(membri).some(x => x.ruolo === 'master'))) ruolo = 'giocatore';
     const { id, chiave } = await this.nuovoMembro(membri, m.nome, ruolo, false);
     await this.put('membri', membri);
@@ -931,7 +942,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
       if (m.ambientazione) c.ambientazione = testo(m.ambientazione, 400);
       if (m.nome) c.nome = testo(m.nome, 60);
       if (m.masterTipo) c.masterTipo = m.masterTipo === 'umano' ? 'umano' : 'ai';
-      if (m.nuovaSessione) { c.sessione = (c.sessione || 1) + 1; c.invito = codiceCasuale(8); await this.diario('sistema', `Inizia la sessione ${c.sessione}.`); this.ctx.waitUntil(this.evolviMondo(false)); await this.minacceCrescono(); for (const x of this.online()) if (membri[x] && membri[x].sessioneVista !== c.sessione) { membri[x].presenze = (membri[x].presenze || 0) + 1; membri[x].sessioneVista = c.sessione; } await this.put('membri', membri); }
+      if (m.nuovaSessione) { c.sessione = (c.sessione || 1) + 1; c.invito = codiceCasuale(8); c.invitoSpettatori = codiceCasuale(10); await this.diario('sistema', `Inizia la sessione ${c.sessione}.`); this.ctx.waitUntil(this.evolviMondo(false)); await this.minacceCrescono(); for (const x of this.online()) if (membri[x] && membri[x].sessioneVista !== c.sessione) { membri[x].presenze = (membri[x].presenze || 0) + 1; membri[x].sessioneVista = c.sessione; } await this.put('membri', membri); }
       if (m.ruoli && me.admin) for (const [id, r] of Object.entries(m.ruoli)) if (membri[id] && ['giocatore', 'spettatore', 'master'].includes(r)) membri[id].ruolo = r;
       await this.put('campagna', c); await this.put('membri', membri);
     }
@@ -944,6 +955,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     const per = m.per || io;
     if (!m.pg || typeof m.pg !== 'object') return;
     if (JSON.stringify(m.pg).length > 60000) return;
+    m.pg = JSON.parse(JSON.stringify(m.pg).replace(/</g, '‹')); // la scheda arriva dal telefono di un giocatore: niente HTML nei suoi campi (anche quelli numerici) verso gli altri
     const primaPg = await this.get('pg:' + per);
     m.pg.segreto = primaPg?.segreto || (m.pg.nome ? this.segretoNuovo() : undefined); m.pg.sogni = primaPg?.sogni; // segreti e sogni li scrive solo il server
     await this.put('pg:' + per, m.pg);
