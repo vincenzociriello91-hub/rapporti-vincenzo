@@ -39,6 +39,10 @@ const RISERVA = {
   invito: ['Cosa fate?', 'Che cosa decidete di fare?', 'Come vi muovete adesso?', 'Chi di voi fa la prima mossa?', 'Ditemi cosa fa ognuno di voi.'],
   silenzio: ['Il momento sembra aspettare una vostra decisione.', 'Qualcosa sta per succedere, se nessuno si muove.', 'Il tempo passa: cosa fate?']
 };
+const PROMEMORIA = [['giorno', 86400000], ['ora', 3600000]]; // promemoria il giorno prima e un'ora prima
+export function b64url(b) { let s = ''; for (const x of b) s += String.fromCharCode(x); return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+// cosa entra nella copia della campagna (non i membri con le loro chiavi, non le immagini)
+const COPIA = /^(pg:|luogo:|note:)|^(campagna|diario|memoria|mondo|png|luoghi|luogoAttuale|segnalini|gruppo|missioni|voto|enigma|nemesi|scelte|minacce|base|serate|riepiloghi|memoriale|relazioni|statistiche|avventura|tattiche|dungeonGiorno|aree|combattimento|negozio|noteMaster|daRiassumere)$/;
 const SILENZIO = 4 * 60000; // dopo quanti minuti di silenzio il master AI fa succedere qualcosa
 const REAZIONI = ['👏', '😂', '😱', '🔥', '❤️', '🎲'];
 const LINGUE = { it: 'italiano', en: 'inglese', es: 'spagnolo', fr: 'francese', de: 'tedesco' };
@@ -106,7 +110,9 @@ export class Tavolo extends DurableObject {
   }
 
   // ---------- illustrazioni realistiche delle scene (Workers AI, quota gratuita giornaliera) ----------
-  async illustra(prompt, didascalia, forza, vera) {
+  // riserva finale: un telefono del tavolo disegna con un servizio gratuito e manda l'immagine (vale per scene, riepiloghi, volti e mostri)
+  chiediDisegno(prompt, dati) { const id = 'x' + Date.now().toString(36) + Math.floor(Math.random() * 1000); this.daDisegnare = { ...(this.daDisegnare?.id ? {} : this.daDisegnare || {}), [id]: { ...dati, t: Date.now() } }; this.tutti({ t: 'disegna_tu', id, prompt, piccola: dati.scopo !== 'scena' }); }
+  async illustra(prompt, didascalia, forza, vera, extra) {
     try {
       const oggi = new Date().toISOString().slice(0, 10), q = await this.get('quotaImmagini', { giorno: oggi, n: 0, ultima: 0 });
       if (q.giorno !== oggi) { q.giorno = oggi; q.n = 0; }
@@ -119,7 +125,7 @@ export class Tavolo extends DurableObject {
     } catch (e) {
       this.erroreImg = String(e?.message || e).slice(0, 700); console.error('illustra', this.erroreImg);
       // riserva finale: chiede a un telefono del tavolo di disegnarla (servizio gratuito dal suo collegamento) e di mandarla qui
-      if (forza || vera) { const id = 'x' + Date.now().toString(36); this.daDisegnare = { id, didascalia, t: Date.now() }; this.tutti({ t: 'disegna_tu', id, prompt: STILE_IMG + prompt }); this.erroreImg = 'riserva'; }
+      if (forza || vera) { this.chiediDisegno(STILE_IMG + prompt, { scopo: 'scena', didascalia, ...(extra || {}) }); this.erroreImg = 'riserva'; }
       return null;
     }
   }
@@ -170,7 +176,7 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
       p.diario = [...(p.diario || []), { t: rie.t, sessione: stats.sessione, titolo: rie.titolo, testo: testo(pagina, 700) }].slice(-30);
       await this.put('pg:' + id, p); this.tutti({ t: 'scheda', per: id, pg: p });
     }
-    rie.img = out.prompt ? await this.illustra(testo(out.prompt, 600), rie.titolo, true) : null;
+    rie.img = out.prompt ? await this.illustra(testo(out.prompt, 600), rie.titolo, true, false, { riepilogo: rie.t }) : null;
     const elenco = await this.get('riepiloghi', []); elenco.push(rie); await this.put('riepiloghi', elenco.slice(-30));
     const d = await this.get('diario', []); d.push({ t: rie.t, tipo: 'riepilogo', testo: rie.titolo, chi: 'master', riepilogo: rie.t }); while (d.length > 400) d.shift(); await this.put('diario', d);
     this.tutti({ t: 'riepilogo', r: rie });
@@ -179,13 +185,14 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
   }
 
   // ---------- mostri disegnati e volti dei PNG: generati una volta per campagna, poi salvati ----------
-  async immagineSalvata(prompt, quotaChiave, max) {
+  async immagineSalvata(prompt, quotaChiave, max, riserva) {
     const oggi = new Date().toISOString().slice(0, 10), q = await this.get(quotaChiave, { giorno: oggi, n: 0 });
     if (q.giorno !== oggi) { q.giorno = oggi; q.n = 0; }
     if (q.n >= max) return null;
     q.n++; await this.put(quotaChiave, q);
-    const jpeg = await generaImmagine((await this.get('campagna'))?.prova ? { ...this.env, IMG_FINTA: 1 } : this.env, prompt, true).catch(() => null);
-    if (!jpeg) return null;
+    const prova = (await this.get('campagna'))?.prova;
+    const jpeg = await generaImmagine(prova ? { ...this.env, IMG_FINTA: 1 } : this.env, prompt, true).catch(() => null);
+    if (!jpeg) { if (riserva && !prova) this.chiediDisegno(prompt, riserva); return null; }
     const id = 'i' + Date.now().toString(36) + Math.floor(Math.random() * 100);
     await this.ctx.storage.put('img:' + id, jpeg);
     return id;
@@ -195,7 +202,7 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
     const mostri = await this.get('mostri', {}); if (mostri[chiave] || this.inCorso?.has('m:' + chiave)) return;
     (this.inCorso = this.inCorso || new Set()).add('m:' + chiave);
     try {
-      const id = await this.immagineSalvata(`pixel art sprite of a ${chiave} (fantasy monster from Dungeons and Dragons), one single creature, full body, side view facing right, 16-bit detailed RPG game asset, centered, on a plain flat pure white background, no ground, no shadow, no text`, 'quotaMostri', 25);
+      const id = await this.immagineSalvata(`pixel art sprite of a ${chiave} (fantasy monster from Dungeons and Dragons), one single creature, full body, side view facing right, 16-bit detailed RPG game asset, centered, on a plain flat pure white background, no ground, no shadow, no text`, 'quotaMostri', 25, { scopo: 'mostro', chiave });
       if (!id) return;
       const m2 = await this.get('mostri', {}); m2[chiave] = id; await this.put('mostri', m2);
       this.tutti({ t: 'mostri', mostri: m2 });
@@ -209,7 +216,7 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
       const diario = await this.get('diario', []), recenti = diario.filter(d => d.tipo === 'narrazione').slice(-2).map(d => d.testo).join('\n');
       const r = await this.g({ contents: [{ parts: [{ text: `Describe in English, max 40 words, the face and look of the D&D character "${nome}" for a portrait painting (age, race, hair, clothes, expression), consistent with this scene:\n${recenti}\nOnly the description.` }] }], generationConfig: { temperature: 0.7 } }, 'racconto');
       const desc = r.ok ? ((await r.json()).candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '').trim().slice(0, 400) : '';
-      const id = await this.immagineSalvata(`realistic fantasy portrait painting, head and shoulders, ${desc || nome}, Dungeons and Dragons character, dramatic warm lighting, highly detailed face, painterly realism, dark background, no text`, 'quotaVolti', 25);
+      const id = await this.immagineSalvata(`realistic fantasy portrait painting, head and shoulders, ${desc || nome}, Dungeons and Dragons character, dramatic warm lighting, highly detailed face, painterly realism, dark background, no text`, 'quotaVolti', 25, { scopo: 'volto', chiave: nome });
       if (!id) return;
       const v2 = await this.get('volti', {}); v2[nome] = id; await this.put('volti', v2);
       this.tutti({ t: 'volti', volti: v2 });
@@ -314,15 +321,41 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
   }
   // master proattivo: se il tavolo tace da qualche minuto fa succedere qualcosa (al massimo due volte di fila)
   async controllaSilenzio() {
-    const c = await this.get('campagna'); if (c?.masterTipo !== 'ai') return;
+    const c = await this.get('campagna'); if (c?.masterTipo !== 'ai') return this.prossimoControllo();
     const membri = await this.get('membri', {}), online = this.online().filter(x => membri[x]?.ruolo === 'giocatore');
-    if (!online.length) return;
+    if (!online.length) return this.prossimoControllo();
     const diario = await this.get('diario', []), ultimo = diario[diario.length - 1]?.t || 0;
     const dopoGiocatori = diario.slice(diario.map(d => d.chi !== 'master' && ['chat', 'parlato', 'dado', 'comando'].includes(d.tipo)).lastIndexOf(true) + 1).filter(d => d.tipo === 'narrazione' && d.silenzio).length;
     if (Date.now() - ultimo >= SILENZIO && dopoGiocatori < 2 && !(await this.get('masterInAttesa', false))) { this.silenzio = true; await this.programmaMaster(true); return; }
     await this.prossimoControllo();
   }
-  async prossimoControllo() { const a = await this.ctx.storage.getAlarm(); if (!a) await this.ctx.storage.setAlarm(Date.now() + SILENZIO); }
+  async prossimoControllo() {
+    const a = await this.ctx.storage.getAlarm(), pross = await this.prossimoPromemoria();
+    const membri = await this.get('membri', {}), qualcuno = this.online().some(x => membri[x]?.ruolo === 'giocatore');
+    const quando = Math.min(qualcuno ? Date.now() + SILENZIO : Infinity, pross || Infinity);
+    if (quando !== Infinity && (!a || a > quando)) await this.ctx.storage.setAlarm(quando);
+  }
+  // ---------- promemoria delle serate come notifica sul telefono (Web Push senza contenuto: niente dati personali in giro) ----------
+  async prossimoPromemoria() { const l = await this.get('serate', []); let min = 0; for (const x of l) for (const [k, dt] of PROMEMORIA) { const t = x.t - dt; if (!x.avvisi?.[k] && t > Date.now() - 3600000 && (!min || t < min)) min = Math.max(t, Date.now() + 1000); } return min; }
+  async mandaPromemoria() {
+    const l = await this.get('serate', []), iscritti = await this.get('push', {}); let cambiato = false;
+    for (const x of l) for (const [k, dt] of PROMEMORIA) if (!x.avvisi?.[k] && Date.now() >= x.t - dt && Date.now() < x.t) {
+      x.avvisi = { ...(x.avvisi || {}), [k]: true }; cambiato = true;
+      for (const [id, sub] of Object.entries(iscritti)) if (x.risposte?.[id] !== false) { const ok = await this.webPush(sub); if (ok === 'via') { delete iscritti[id]; await this.put('push', iscritti); } }
+    }
+    if (cambiato) await this.put('serate', l);
+  }
+  async webPush(endpoint) {
+    try {
+      const k = await this.manuale('vapid'); if (!k?.jwk) return false;
+      const u = new URL(endpoint), enc = o => b64url(new TextEncoder().encode(JSON.stringify(o)));
+      const corpo = `${enc({ typ: 'JWT', alg: 'ES256' })}.${enc({ aud: u.origin, exp: Math.floor(Date.now() / 1000) + 12 * 3600, sub: 'https://vincenzociriello91-hub.github.io/TavoloAvventura/' })}`;
+      const chiave = await crypto.subtle.importKey('jwk', k.jwk, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
+      const firma = b64url(new Uint8Array(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, chiave, new TextEncoder().encode(corpo))));
+      const r = await fetch(endpoint, { method: 'POST', headers: { Authorization: `vapid t=${corpo}.${firma}, k=${k.pub}`, TTL: '86400', Urgency: 'high', 'Content-Length': '0' } });
+      return r.status === 404 || r.status === 410 ? 'via' : r.ok;
+    } catch { return false; }
+  }
   // ---------- serate, traduzioni, note sulla mappa, giochi di taverna ----------
   // calendario delle serate: il master propone, ognuno risponde ci sono / non ci sono (il promemoria lo mette il calendario del telefono)
   async serata(io, me, capo, m) {
@@ -330,7 +363,7 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
     if (m.t === 'serata_nuova') { if (!capo) return; const t = Date.parse(m.quando); if (!(t > Date.now() - 3600000)) return; l.push({ id: 's' + Date.now().toString(36), t, nota: testo(m.nota, 120), risposte: { [io]: true } }); l.sort((a, b) => a.t - b.t); l = l.slice(0, 12); await this.annuncia(`Prossima serata: ${new Date(t).toLocaleString('it-IT', { timeZone: 'Europe/Rome', weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })}${m.nota ? ' (' + testo(m.nota, 120) + ')' : ''}.`); }
     else if (m.t === 'serata_risposta') { const x = l.find(y => y.id === m.id); if (!x || me.ruolo === 'spettatore') return; x.risposte[io] = !!m.ci; }
     else { if (!capo) return; l = l.filter(y => y.id !== m.id); }
-    await this.put('serate', l); this.tutti({ t: 'serate', serate: l });
+    await this.put('serate', l); this.tutti({ t: 'serate', serate: l }); await this.prossimoControllo();
   }
   async traduci(ws, m) {
     const lingua = LINGUE[m.lingua], t = testo(m.testo, 1500); if (!lingua || !t) return;
@@ -403,7 +436,7 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
       case 'minaccia': { const l = await this.get('minacce', []), nome = testo(e.nome, 60); if (!nome) return; const x = l.find(m => m.nome === nome); if (x) x.livello = Math.min(5, x.livello + 1); else l.push({ nome, descrizione: testo(e.descrizione, 240), livello: 1, t }); await this.put('minacce', l.slice(-8)); break; }
       case 'minaccia_sventata': { const l = await this.get('minacce', []), x = l.find(m => m.nome === testo(e.nome, 60)); if (!x) return; x.sventata = true; await this.put('minacce', l); await this.annuncia(`Minaccia sventata: ${x.nome}.`); break; }
       case 'reputazione_luogo': { const mo = await this.get('mondo', { fazioni: {}, valute: {}, viaggi: [], notizie: [] }), luogo = testo(e.luogo, 60); if (!luogo) return; mo.reputazioneLuoghi = mo.reputazioneLuoghi || {}; mo.reputazioneLuoghi[luogo] = Math.max(-100, Math.min(100, (mo.reputazioneLuoghi[luogo] || 0) + (Number(e.delta) || 0))); await this.put('mondo', mo); this.tutti({ t: 'mondo', mondo: mo }); break; }
-      case 'compagno': { const p = await this.get('pg:' + e.pg), sp = COMPAGNI_ANIMALI[e.specie]; if (!p || !sp) return; p.compagni = [...(p.compagni || []), { nome: testo(e.nome, 30) || e.specie, specie: e.specie, ...sp, pfMax: sp.pf }].slice(-3); await this.put('pg:' + e.pg, p); this.tutti({ t: 'scheda', per: e.pg, pg: p }); await this.annuncia(`${p.nome} ha un nuovo compagno: ${testo(e.nome, 30) || e.specie} (${e.specie}).`); return; }
+      case 'compagno': { const p = await this.get('pg:' + e.pg), sp = COMPAGNI_ANIMALI[e.specie]; if (!p || !sp) return; p.compagni = [...(p.compagni || []), { nome: testo(e.nome, 30) || e.specie, specie: e.specie, ...sp, pfMax: sp.pf }].slice(-3); await this.put('pg:' + e.pg, p); this.tutti({ t: 'scheda', per: e.pg, pg: p }); this.ctx.waitUntil(this.disegnaMostro(e.specie)); { const seg = await this.get('segnalini', {}), mio = seg[e.pg]; if (mio) { for (const k of Object.keys(seg)) if (k.startsWith(e.pg + '_c')) delete seg[k]; p.compagni.slice(-2).forEach((a, i) => { seg[`${e.pg}_c${i}`] = { x: mio.x, y: mio.y, nome: a.nome, tipo: 'alleato', animale: a.specie, padrone: e.pg, colore: mio.colore, pf: a.pf, ca: a.ca }; }); await this.put('segnalini', seg); this.tutti({ t: 'segnalini', segnalini: seg }); } } await this.annuncia(`${p.nome} ha un nuovo compagno: ${testo(e.nome, 30) || e.specie} (${e.specie}).`); return; }
     }
     await this.aggiornaMondo();
   }
@@ -609,6 +642,11 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
   async interno(m) {
     const ris = o => new Response(JSON.stringify(o), { headers: { 'Content-Type': 'application/json' } });
     if (m.azione === 'manuale_leggi') return ris(await this.get('manuale', { lezioni: [], problemi: [] }));
+    if (m.azione === 'vapid') {
+      let k = await this.get('vapid', null);
+      if (!k) { const c = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']); const jwk = await crypto.subtle.exportKey('jwk', c.privateKey), raw = new Uint8Array(await crypto.subtle.exportKey('raw', c.publicKey)); k = { jwk, pub: b64url(raw) }; await this.put('vapid', k); }
+      return ris(k);
+    }
     if (m.azione === 'manuale_aggiungi') {
       const man = await this.get('manuale', { lezioni: [], problemi: [] }), chiave = t => t.toLowerCase().replace(/[^a-zà-ù0-9 ]/g, '').slice(0, 70);
       for (const [lista, voci, max] of [[man.lezioni, m.lezioni, 200], [man.problemi, m.problemi, 300]]) for (const v of (Array.isArray(voci) ? voci : []).slice(0, 5)) {
@@ -721,13 +759,19 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
         case 'dungeon_giorno': if (!capo && (await this.get('campagna')).masterTipo === 'umano') return; return this.dungeonDelGiorno(io);
         case 'segnala_problema': { const ora = Date.now(); if (ora - (this.ultimoProblema || 0) < 3000) return; this.ultimoProblema = ora; return this.impara([], [testo(m.testo, 300)]); }
         case 'immagine_esterna': {
-          const att = this.daDisegnare; if (!att || att.id !== m.id || Date.now() - att.t > 180000 || typeof m.dati !== 'string' || m.dati.length > 380000) return;
+          const att = this.daDisegnare?.[m.id]; if (!att || Date.now() - att.t > 900000 || typeof m.dati !== 'string' || m.dati.length > 380000) return;
           const jpeg = Uint8Array.from(atob(m.dati), c => c.charCodeAt(0)); if (jpeg[0] !== 0xFF || jpeg[1] !== 0xD8) return; // solo JPEG veri
-          this.daDisegnare = null; return this.salvaIllustrazione(jpeg, att.didascalia);
+          delete this.daDisegnare[m.id];
+          if (att.scopo === 'scena') { const id = await this.salvaIllustrazione(jpeg, att.didascalia); if (att.riepilogo) { const el = await this.get('riepiloghi', []), r = el.find(x => x.t === att.riepilogo); if (r) { r.img = id; await this.put('riepiloghi', el); } } return; }
+          const id = 'i' + Date.now().toString(36) + Math.floor(Math.random() * 100); await this.ctx.storage.put('img:' + id, jpeg);
+          const chiave = att.scopo === 'volto' ? 'volti' : 'mostri', mappa = await this.get(chiave, {}); mappa[att.chiave] = id; await this.put(chiave, mappa);
+          return this.tutti({ t: chiave, [chiave]: mappa });
         }
         case 'nota_mappa': if (me.ruolo === 'spettatore') return; return this.notaMappa(io, me, m);
         case 'gioco_apri': case 'gioco_entra': case 'gioco_via': case 'gioco_annulla': if (me.ruolo === 'spettatore') return; return this.giocoTaverna(io, me, capo, m);
         case 'serata_nuova': case 'serata_risposta': case 'serata_togli': return this.serata(io, me, capo, m);
+        case 'push_chiave': return this.invia(ws, { t: 'push_chiave', pub: (await this.manuale('vapid'))?.pub || null });
+        case 'push_iscrivi': { const e = String(m.endpoint || ''); let u; try { u = new URL(e); } catch { return; } if (u.protocol !== 'https:' || !/(^|\.)(fcm\.googleapis\.com|push\.services\.mozilla\.com|notify\.windows\.com|push\.apple\.com)$/.test(u.hostname)) return; const iscritti = await this.get('push', {}); iscritti[io] = e; await this.put('push', iscritti); return this.invia(ws, { t: 'push_ok' }); }
         case 'missione_nuova': if (!capo) return; return this.eventoMondo({ tipo: 'missione', titolo: m.titolo, descrizione: m.descrizione, ricompensa: m.ricompensa });
         case 'voto_apri': if (!capo) return; return this.eventoMondo({ tipo: 'voto', domanda: m.domanda, opzioni: m.opzioni });
         case 'voto': return this.vota(io, Number(m.scelta));
@@ -760,6 +804,16 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
         case 'piazza_nemici': if (!capo) return; return this.piazzaNemici(m.mostri);
         case 'note_master': if (!capo) return; if (typeof m.testo === 'string') await this.put('noteMaster', testo(m.testo, 8000)); return this.invia(ws, { t: 'note_master', testo: await this.get('noteMaster', '') });
         case 'libro': return this.invia(ws, { t: 'libro', ...(await this.libro()) });
+        case 'esporta': { if (!me.admin) return; const dati = {}; for (const [k, v] of await this.ctx.storage.list()) if (COPIA.test(k)) dati[k] = v; return this.invia(ws, { t: 'esportazione', dati, codice: (await this.get('campagna'))?.nome }); }
+        case 'importa': {
+          if (!me.admin || !m.dati || typeof m.dati !== 'object') return;
+          const c = await this.get('campagna'), voci = Object.entries(m.dati).filter(([k]) => COPIA.test(k));
+          if (!voci.length) return this.invia(ws, { t: 'errore', msg: 'Il file non contiene una campagna' });
+          for (const [k, v] of voci) await this.put(k, k === 'campagna' ? { ...v, invito: c.invito, creata: c.creata, prova: c.prova } : v); // l'invito resta quello attuale
+          await this.diario('sistema', `${me.nome} ripristina la campagna da una copia salvata.`);
+          for (const s2 of this.ctx.getWebSockets()) { const x = this.membroDi(s2); if (x) this.invia(s2, { t: 'stato', stato: await this.statoCompleto(x) }); }
+          return;
+        }
         case 'avventura_inizia': if (!capo) return; return this.iniziaAvventura(m.id);
         case 'avventura_scena': if (!capo) return; return this.scenaAvventura(m.scena);
         case 'avventura_leggi': if (!capo) return; { const avv = await this.get('avventura'), sc = AVVENTURE[avv?.id]?.scene.find(x => x.id === m.scena); if (!sc) return; const ev = await this.diario('narrazione', sc.leggi, 'master'); return this.tutti({ t: 'narra', testo: ev.testo, png: '', chi: 'master' }); }
@@ -919,12 +973,13 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
 
   // ---------- mappa ----------
   async segnalino(io, capo, m) {
-    const id = String(m.id || io);
-    if (id !== io && !capo) return;
+    const id = String(m.id || io), segPrima = await this.get('segnalini', {});
+    const mio = id === io || segPrima[id]?.padrone === io; // il proprio animale lo muove il suo giocatore
+    if (!mio && !capo) return;
     if (!capo) m = { x: m.x, y: m.y }; // un giocatore sposta solo il suo segnalino: non ne cambia tipo, nome o punti ferita
     const seg = await this.get('segnalini', {});
     let via = null;
-    if (!m.rimuovi && seg[id] && seg[id].tipo === 'pg' && (!capo || id === io)) {
+    if (!m.rimuovi && seg[id] && (seg[id].tipo === 'pg' || seg[id].padrone) && (!capo || mio)) {
       const luogo = await this.get('luogo:' + await this.get('luogoAttuale'));
       if (luogo) { via = percorso(luogo, seg[id], { x: m.x | 0, y: m.y | 0 }); if (!via) return this.invia(this.wsDi?.(io), { t: 'segnalini', segnalini: seg }); }
     }
@@ -947,13 +1002,21 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     const id = luogoDato?.id || await this.get('luogoAttuale'); if (!id) return;
     const luogo = luogoDato || await this.get('luogo:' + id); if (!luogo) return;
     // si scopre solo ciò che si vede davvero: muri, rocce e case bloccano la vista (stanze dietro i muri restano nascoste)
-    const r = ['dungeon', 'grotta'].includes(luogo.tipo) ? 5 : ['taverna', 'interno'].includes(luogo.tipo) ? 8 : 9;
+    const r = ['dungeon', 'grotta'].includes(luogo.tipo) ? 5 : ['taverna', 'interno'].includes(luogo.tipo) ? 8 : ['citta', 'villaggio', 'porto', 'castello'].includes(luogo.tipo) ? 12 : 9;
     const v = (luogo.visto || '0'.repeat(luogo.w * luogo.h)).split(''), { vista } = griglia(luogo);
     let cambi = 0;
     for (const p of punti) for (let y = p.y - r; y <= p.y + r; y++) for (let x = p.x - r; x <= p.x + r; x++) {
       if (x < 0 || y < 0 || x >= luogo.w || y >= luogo.h || (x - p.x) ** 2 + (y - p.y) ** 2 > r * r) continue;
       const i = y * luogo.w + x; if (v[i] !== '0' || !vede(luogo, vista, p.x, p.y, x, y)) continue;
       v[i] = '1'; cambi++;
+    }
+    // nei paesi le zone illuminate (lampioni, falò, case) si vedono anche da lontano, come nei Varchi
+    if (['citta', 'villaggio', 'porto', 'castello'].includes(luogo.tipo)) {
+      const luci = [...(luogo.oggetti || []).filter(o => /lampione|falo|braciere|torcia|lanterna/.test(o.tipo)).map(o => ({ x: o.x, y: o.y, r: 3 })), ...luogo.edifici.filter(e => e.stato !== 'distrutto').map(e => ({ x: e.x + Math.floor(e.w / 2), y: e.y + e.h, r: 2 }))];
+      for (const p of punti) for (const l of luci) {
+        if ((l.x - p.x) ** 2 + (l.y - p.y) ** 2 > 22 * 22 || !vede(luogo, vista, p.x, p.y, Math.min(luogo.w - 1, l.x), Math.min(luogo.h - 1, l.y))) continue;
+        for (let y = l.y - l.r; y <= l.y + l.r; y++) for (let x = l.x - l.r; x <= l.x + l.r; x++) { if (x < 0 || y < 0 || x >= luogo.w || y >= luogo.h) continue; const i = y * luogo.w + x; if (v[i] === '0' && vede(luogo, vista, Math.min(luogo.w - 1, l.x), Math.min(luogo.h - 1, l.y), x, y)) { v[i] = '1'; cambi++; } }
+      }
     }
     if (!cambi && luogo.visto) return luogo;
     luogo.visto = v.join('');
@@ -987,6 +1050,8 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
       if (mm.ruolo !== 'giocatore') continue;
       const pg = await this.get('pg:' + mid);
       seg[mid] = { ...posto(luogo.ingresso), nome: pg?.nome || mm.nome, colore: mm.colore, tipo: 'pg' };
+      // i compagni animali seguono il loro personaggio e combattono nel suo stesso ordine
+      (pg?.compagni || []).slice(-2).forEach((a, i) => { seg[`${mid}_c${i}`] = { ...posto(seg[mid]), nome: a.nome, tipo: 'alleato', animale: a.specie, padrone: mid, colore: mm.colore, pf: a.pf, ca: a.ca }; });
     }
     // chi abita il luogo: l'oste dietro il bancone, il padrone di casa negli interni
     if ((await this.get('campagna'))?.solitaria) COMPAGNI.forEach(cmp => { seg[cmp.id] = { ...posto(luogo.ingresso), nome: cmp.nome, tipo: 'alleato', colore: '#5cc85c', pf: cmp.pf, ca: cmp.ca }; });
@@ -1180,6 +1245,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     }
     if ((await this.get('daRiassumere', 0)) >= 25) await this.riassumi();
     if (await this.get('masterInAttesa', false)) return;
+    await this.mandaPromemoria();
     await this.controllaSilenzio();
   }
 
