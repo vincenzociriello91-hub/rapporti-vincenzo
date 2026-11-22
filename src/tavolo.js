@@ -103,6 +103,44 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
     if (rie.racconto) this.tutti({ t: 'narra', testo: rie.racconto, chi: 'master', riassunto: true });
   }
 
+  // ---------- mostri disegnati e volti dei PNG: generati una volta per campagna, poi salvati ----------
+  async immagineSalvata(prompt, quotaChiave, max) {
+    const oggi = new Date().toISOString().slice(0, 10), q = await this.get(quotaChiave, { giorno: oggi, n: 0 });
+    if (q.giorno !== oggi) { q.giorno = oggi; q.n = 0; }
+    if (q.n >= max) return null;
+    q.n++; await this.put(quotaChiave, q);
+    const jpeg = await generaImmagine(this.env, prompt, true);
+    if (!jpeg) return null;
+    const id = 'i' + Date.now().toString(36) + Math.floor(Math.random() * 100);
+    await this.ctx.storage.put('img:' + id, jpeg);
+    return id;
+  }
+  async disegnaMostro(nome) {
+    const chiave = nomeMostro(nome); if (!chiave || UMANOIDI.test(chiave)) return;
+    const mostri = await this.get('mostri', {}); if (mostri[chiave] || this.inCorso?.has('m:' + chiave)) return;
+    (this.inCorso = this.inCorso || new Set()).add('m:' + chiave);
+    try {
+      const id = await this.immagineSalvata(`pixel art sprite of a ${chiave} (fantasy monster from Dungeons and Dragons), one single creature, full body, side view facing right, 16-bit detailed RPG game asset, centered, on a plain flat pure white background, no ground, no shadow, no text`, 'quotaMostri', 25);
+      if (!id) return;
+      const m2 = await this.get('mostri', {}); m2[chiave] = id; await this.put('mostri', m2);
+      this.tutti({ t: 'mostri', mostri: m2 });
+    } finally { this.inCorso.delete('m:' + chiave); }
+  }
+  async disegnaVolto(png) {
+    const nome = testo(png, 40).trim(); if (!nome || /banditore/i.test(nome)) return;
+    const volti = await this.get('volti', {}); if (volti[nome] || this.inCorso?.has('v:' + nome)) return;
+    (this.inCorso = this.inCorso || new Set()).add('v:' + nome);
+    try {
+      const diario = await this.get('diario', []), recenti = diario.filter(d => d.tipo === 'narrazione').slice(-2).map(d => d.testo).join('\n');
+      const r = await this.g({ contents: [{ parts: [{ text: `Describe in English, max 40 words, the face and look of the D&D character "${nome}" for a portrait painting (age, race, hair, clothes, expression), consistent with this scene:\n${recenti}\nOnly the description.` }] }], generationConfig: { temperature: 0.7 } }, 'interni');
+      const desc = r.ok ? ((await r.json()).candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '').trim().slice(0, 400) : '';
+      const id = await this.immagineSalvata(`realistic fantasy portrait painting, head and shoulders, ${desc || nome}, Dungeons and Dragons character, dramatic warm lighting, highly detailed face, painterly realism, dark background, no text`, 'quotaVolti', 25);
+      if (!id) return;
+      const v2 = await this.get('volti', {}); v2[nome] = id; await this.put('volti', v2);
+      this.tutti({ t: 'volti', volti: v2 });
+    } finally { this.inCorso.delete('v:' + nome); }
+  }
+
   // prompt inglese per la scena attuale, dalle ultime narrazioni
   async illustraScena(forza) {
     const diario = await this.get('diario', []), luogo = await this.get('luogo:' + await this.get('luogoAttuale'));
@@ -174,6 +212,7 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
       segnalini, diario: diario.slice(-120), dadi: dadi.filter(d => !d.segreto || vedeSegreti || d.chi === perMembro).slice(-40),
       mondo: await this.get('mondo', { fazioni: {}, valute: {}, viaggi: [], notizie: [] }), relazioni: await this.get('relazioni', {}),
       combattimento: await this.get('combattimento', null), aree: await this.get('aree', []), gruppo: await this.get('gruppo', { oro: 0, oggetti: [] }),
+      mostri: await this.get('mostri', {}), volti: await this.get('volti', {}), negozio: await this.get('negozio', null),
       memoria: vedeSegreti ? memoria : undefined, suggerimenti: vedeSegreti ? suggerimenti.slice(-30) : undefined,
       costi: vedeSegreti ? await this.get('costi', null) : undefined
     };
@@ -678,6 +717,7 @@ Durante il combattimento rispetta l'ordine di iniziativa e gioca tu i turni dei 
     if (narr) {
       const ev = await this.diario('narrazione', narr, 'master');
       this.tutti({ t: 'narra', testo: ev.testo, png: testo(out.png, 40), chi: 'master', modello: r.modello });
+      if (nomePng) this.ctx.waitUntil(this.disegnaVolto(nomePng));
     } else this.tutti({ t: 'master_zitto' });
   }
 
@@ -722,7 +762,7 @@ Durante il combattimento rispetta l'ordine di iniziativa e gioca tu i turni dei 
         await this.put('segnalini', seg); this.tutti({ t: 'segnalini', segnalini: seg }); return;
       }
       case 'png': return e.via ? this.segnalino('master', true, { id: 'p_' + testo(e.nome, 20).replace(/\W+/g, '_'), rimuovi: true }) : this.segnalino('master', true, { id: 'p_' + testo(e.nome, 20).replace(/\W+/g, '_'), x: e.x, y: e.y, nome: testo(e.nome, 40), colore: '#bfae86', tipo: 'png' });
-      case 'nemico': return this.segnalino('master', true, { id: 'n_' + testo(e.nome, 20).replace(/\W+/g, '_') + '_' + (e.x | 0) + '_' + (e.y | 0), x: e.x, y: e.y, nome: e.nome, colore: '#d84b3c', tipo: 'nemico', pf: Number(e.pf) || undefined, ca: Number(e.ca) || undefined });
+      case 'nemico': this.ctx.waitUntil(this.disegnaMostro(e.nome)); return this.segnalino('master', true, { id: 'n_' + testo(e.nome, 20).replace(/\W+/g, '_') + '_' + (e.x | 0) + '_' + (e.y | 0), x: e.x, y: e.y, nome: e.nome, colore: '#d84b3c', tipo: 'nemico', pf: Number(e.pf) || undefined, ca: Number(e.ca) || undefined });
     }
   }
 
@@ -861,11 +901,14 @@ export function wav16k(pcm, rate) {
 }
 // Illustrazioni: FLUX.1 schnell su Workers AI (quota gratuita di Cloudflare). IMG_FINTA nelle prove.
 const SCENE_EN = { citta: 'a bustling medieval fantasy city with stone houses, cobblestone streets and market stalls', villaggio: 'a small medieval fantasy village with thatched cottages and dirt roads', porto: 'a medieval fantasy harbor with wooden docks, ships and warehouses', taverna: 'the cozy interior of a medieval fantasy tavern with a roaring fireplace, wooden tables and patrons', dungeon: 'a dark ancient dungeon with stone corridors lit by flickering torches', grotta: 'a vast natural cave with stalagmites, glowing mushrooms and underground pools', castello: 'a mighty medieval castle with towers, banners and a courtyard', foresta: 'a dense ancient forest with towering trees, mist and a winding path', interno: 'the interior of a medieval fantasy building with furniture and candlelight', aperto: 'open medieval fantasy countryside with rolling hills and a dirt road' };
-export async function generaImmagine(env, prompt) {
+// "Goblin 2", "goblin arciere" -> "goblin arciere"; umanoidi e orchi usano le figure LPC
+export const UMANOIDI = /bandit|brigant|guardi|soldat|cultist|mago|strega|ladro|assassin|cavalier|mercenar|predon|pirat|negromant|sacerdot|capitan|stregon|goblin|orco|orchi|hobgoblin|bugbear|drow|elfo oscuro/;
+export function nomeMostro(n) { return testo(n, 40).toLowerCase().replace(/[^a-zà-ù ]+/g, ' ').replace(/\s+/g, ' ').trim(); }
+export async function generaImmagine(env, prompt, piccola) {
   const stile = 'Realistic cinematic fantasy illustration, Dungeons and Dragons, dramatic volumetric lighting, highly detailed, painterly realism, no text, no watermark. ';
   if (env.IMG_FINTA) return Uint8Array.from(atob('/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/yQALCAABAAEBAREA/8wABgAQEAX/2gAIAQEAAD8A0s8g/9k='), c => c.charCodeAt(0));
   if (!env.AI) return null;
-  const r = await env.AI.run('@cf/black-forest-labs/flux-1-schnell', { prompt: stile + prompt, steps: 6 });
+  const r = await env.AI.run('@cf/black-forest-labs/flux-1-schnell', { prompt: piccola ? prompt : stile + prompt, steps: piccola ? 4 : 6 });
   return r?.image ? Uint8Array.from(atob(r.image), c => c.charCodeAt(0)) : null;
 }
 // Eventi stagionali del mondo reale: il master li intreccia nella storia se ha senso
