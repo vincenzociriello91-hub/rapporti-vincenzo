@@ -509,7 +509,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     // se Gemini non risponde si disegna comunque il luogo, senza lasciare il gruppo ad aspettare
     const prompt = t.match(/PROMPT:\s*(.+)/i)?.[1] || `Detailed fantasy D&D illustration of ${luogo?.nome || 'an adventuring party'} (${luogo?.tipo || 'tavern'}), cinematic lighting, painterly, atmospheric`, did = t.match(/DIDASCALIA:\s*(.+)/i)?.[1];
     const ok = await this.illustra(prompt, did || luogo?.nome || 'La scena', forza, forza);
-    if (!ok && forza) this.tutti({ t: 'avviso', msg: "L'illustrazione non è riuscita (servizio immagini occupato o quota del giorno finita): riprova tra poco", motivo: this.erroreImg || null });
+    if (!ok && forza) this.tutti({ t: 'avviso', msg: /4006|429|402|quota|error data/i.test(this.erroreImg || '') ? "Per oggi le immagini gratuite sono finite: tornano dopo l'una di notte. La partita va avanti normalmente." : "L'illustrazione non è riuscita: riprova tra qualche minuto", motivo: this.erroreImg || null });
   }
 
   // ---------- connettore per Claude: lettura dello stato e preparazione delle sessioni ----------
@@ -573,7 +573,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
       luoghi: luoghiIdx, luogo: await this.luogoCon(attuale),
       segnalini, diario: diario.slice(-120), dadi: dadi.filter(d => !d.segreto || vedeSegreti || d.chi === perMembro).slice(-40),
       mondo: await this.get('mondo', { fazioni: {}, valute: {}, viaggi: [], notizie: [] }), relazioni: await this.get('relazioni', {}),
-      combattimento: await this.get('combattimento', null), aree: await this.get('aree', []), gruppo: await this.get('gruppo', { oro: 0, oggetti: [] }),
+      combattimento: await this.combattimentoValido(), aree: await this.get('aree', []), gruppo: await this.get('gruppo', { oro: 0, oggetti: [] }),
       mostri: await this.get('mostri', {}), volti: await this.get('volti', {}), negozio: await this.get('negozio', null),
       png: await this.get('png', {}), memoriale: await this.get('memoriale', []), ...(await this.mondoVivo(vedeSegreti)), serate: await this.get('serate', []), giocoTaverna: await this.get('giocoTaverna', null), noteMappa: { luogo: await this.get('luogoAttuale'), note: await this.get('note:' + await this.get('luogoAttuale'), []) }, avventure: Object.entries(AVVENTURE).map(([id, a]) => ({ id, titolo: a.titolo, livelli: a.livelli, tipo: a.tipo, seguito: a.seguito })),
       avventura: vedeSegreti ? await this.avventuraPerMaster() : undefined,
@@ -897,6 +897,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     if (l && (!l.oggetti || l.arrediV !== ARREDI_V)) {
       const c = await this.get('campagna'), nuovo = generaLuogo(l.nome, l.tipo, (c?.creata || l.creato) + ':' + id, l.tipo === 'interno' ? l.edifici.map(e => e.nome) : undefined);
       l.celle = nuovo.celle; l.oggetti = nuovo.oggetti; l.arrediV = ARREDI_V;
+      for (const e of nuovo.edifici) if (['ponte', 'guado'].includes(e.id) && !l.edifici.some(x => x.id === e.id)) l.edifici.push(e); // ponti e guadi arrivati dopo
       for (const e of l.edifici) if (e.stato === 'bruciato' || e.stato === 'distrutto') for (const o of l.oggetti) if (o.x >= e.x && o.x < e.x + e.w && o.y >= e.y && o.y < e.y + e.h) o.stato = e.stato === 'bruciato' ? 'bruciato' : 'rotto';
       await this.put('luogo:' + id, l);
     }
@@ -942,6 +943,8 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
   }
 
   // ---------- combattimento a turni ----------
+  // un combattimento senza nessuno in ordine (rimasto da versioni vecchie) si chiude da solo
+  async combattimentoValido() { const c = await this.get('combattimento', null); if (c?.attivo && !c.ordine?.length) { c.attivo = false; await this.put('combattimento', c); } return c; }
   async combattimento(io, me, capo, m) {
     let c = await this.get('combattimento', null);
     const az = m.azione;
@@ -1742,7 +1745,7 @@ export function generaLuogo(nome, tipo, seme, nomiInterni) {
 
 // Oggetti di scena (persistenti): strutturali (fissi) o movibili. Tavoli e letti passano dalle caselle agli oggetti.
 // ---------- griglia: passaggi, percorsi e linea di vista (le stesse regole stanno in mappa.js) ----------
-export const ARREDI_V = 2;
+export const ARREDI_V = 3;
 export const PASSABILI = ['tappeto', 'ragnatela', 'ossa', 'funghi', 'macerie', 'torcia', 'candelabro'];
 export const DUE_CASELLE = ['letto', 'carretto', 'tronco', 'bancarella', 'barca'];
 export function celleOggetto(o) { return DUE_CASELLE.includes(o.tipo) ? [[o.x, o.y], o.dir === 'v' ? [o.x, o.y + 1] : [o.x + 1, o.y]] : [[o.x, o.y]]; }
