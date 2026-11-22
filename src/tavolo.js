@@ -563,6 +563,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
   async segnalino(io, capo, m) {
     const id = String(m.id || io);
     if (id !== io && !capo) return;
+    if (!capo) m = { x: m.x, y: m.y }; // un giocatore sposta solo il suo segnalino: non ne cambia tipo, nome o punti ferita
     const seg = await this.get('segnalini', {});
     let via = null;
     if (!m.rimuovi && seg[id] && seg[id].tipo === 'pg' && (!capo || id === io)) {
