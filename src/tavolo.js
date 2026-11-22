@@ -53,10 +53,10 @@ export class Tavolo extends DurableObject {
     try {
       const oggi = new Date().toISOString().slice(0, 10), q = await this.get('quotaImmagini', { giorno: oggi, n: 0, ultima: 0 });
       if (q.giorno !== oggi) { q.giorno = oggi; q.n = 0; }
-      if (q.n >= 40 || (!forza && Date.now() - q.ultima < 120000)) return; // al massimo 40 al giorno, una ogni 2 minuti
+      if (q.n >= 40 || (!forza && Date.now() - q.ultima < 120000)) return null; // al massimo 40 al giorno, una ogni 2 minuti
       q.n++; q.ultima = Date.now(); await this.put('quotaImmagini', q);
       const jpeg = await generaImmagine(this.env, prompt);
-      if (!jpeg) return;
+      if (!jpeg) return null;
       const id = 'i' + Date.now().toString(36);
       await this.ctx.storage.put('img:' + id, jpeg);
       const elenco = await this.get('immagini', []);
@@ -291,10 +291,11 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     const recenti = diario.filter(d => d.tipo === 'narrazione').slice(-3).map(d => d.testo).join('\n');
     if (!recenti && !luogo) return;
     const r = await this.g({ contents: [{ parts: [{ text: `Write ONE English prompt (max 60 words) for a realistic image generator, describing the current scene of a D&D game: setting, lighting, mood, characters seen from a cinematic angle. No names, no text in the image. Place: ${luogo?.nome || ''} (${luogo?.tipo || ''}). Recent narration (Italian):\n${recenti}\nThen on a second line write an Italian caption of max 12 words. Format: PROMPT: ...\nDIDASCALIA: ...` }] }], generationConfig: { temperature: 0.6 } }, 'interni');
-    if (!r.ok) return;
-    const t = (await r.json()).candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '';
-    const prompt = t.match(/PROMPT:\s*(.+)/i)?.[1], did = t.match(/DIDASCALIA:\s*(.+)/i)?.[1];
-    if (prompt) await this.illustra(prompt, did || luogo?.nome || 'La scena', forza);
+    const t = r.ok ? (await r.json()).candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '' : '';
+    // se Gemini non risponde si disegna comunque il luogo, senza lasciare il gruppo ad aspettare
+    const prompt = t.match(/PROMPT:\s*(.+)/i)?.[1] || `Detailed fantasy D&D illustration of ${luogo?.nome || 'an adventuring party'} (${luogo?.tipo || 'tavern'}), cinematic lighting, painterly, atmospheric`, did = t.match(/DIDASCALIA:\s*(.+)/i)?.[1];
+    const ok = await this.illustra(prompt, did || luogo?.nome || 'La scena', forza);
+    if (!ok && forza) this.tutti({ t: 'avviso', msg: "L'illustrazione non è riuscita (servizio immagini occupato o quota del giorno finita): riprova tra poco" });
   }
 
   // ---------- connettore per Claude: lettura dello stato e preparazione delle sessioni ----------
