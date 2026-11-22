@@ -5,6 +5,7 @@ import { DurableObject } from 'cloudflare:workers';
 
 const ORIGINI = ['https://vincenzociriello91-hub.github.io', 'http://localhost:8765'];
 const MAX_MSG = 200000;
+const SUONI = ['porta', 'colpo', 'magia', 'monete', 'pozione', 'vittoria', 'sconfitta', 'raro', 'ferito', 'successo', 'critico', 'livello', 'tocco', 'tuono'];
 const ATTESA_MASTER = 3500; // ms di silenzio prima che il master AI risponda a quanto detto
 
 export async function apriTavolo(req, env, codice) {
@@ -411,6 +412,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
         case 'chat': { const ev = await this.diario('chat', m.testo, io); this.tutti({ t: 'diario', ev }); if (m.alMaster) await this.programmaMaster(true); return; }
         case 'parlato': return this.parlato(io, me, m);
         case 'comando': { const ev = await this.diario('comando', `${me.nome}: ${testo(m.testo, 300)}`, io); return this.tutti({ t: 'diario', ev }); }
+        case 'suono': if (!capo || !SUONI.includes(m.nome)) return; return this.tutti({ t: 'suono', nome: m.nome }); // tavola dei suoni del master
         case 'narra': if (!capo) return; { const ev = await this.diario('narrazione', m.testo, io); return this.tutti({ t: 'narra', testo: ev.testo, png: testo(m.png, 40), chi: io }); }
         case 'rtc': return this.rtc(io, m);
         case 'impostazioni': return this.impostazioni(ws, io, me, capo, m);
@@ -863,7 +865,7 @@ Ruolo: descrivi scene, interpreta i PNG (dai loro un nome e un modo di parlare r
 Se il gruppo non è ancora in nessun luogo, fai partire l'avventura con un evento "luogo". Evita gli inizi scontati (taverna sotto la pioggia, locandiere nano, incarico da un vecchio misterioso): parti nel mezzo di una situazione originale legata all'ambientazione e alla stagione.
 Varia il linguaggio: non ripetere immagini, aggettivi o battute già presenti in ultimi_eventi.
 Se i giocatori stanno solo parlando tra loro fuori dal gioco o non serve il tuo intervento, rispondi con narrazione vuota "".
-Quando un giocatore ha appena tirato un dado che avevi chiesto, risolvi l'esito.
+Quando un giocatore ha appena tirato un dado che avevi chiesto, risolvi l'esito. Con un 20 naturale racconta un momento epico da ricordare (e usa l'evento suono "raro"); con un 1 naturale un insuccesso buffo, mai umiliante.
 Mai più di 110 parole di narrazione. Niente elenchi, niente markdown.
 Rispondi SOLO con JSON: {"narrazione":"testo da leggere","png":"nome del PNG che parla o vuoto","eventi":[ ... ]}
 Eventi possibili (solo se accadono davvero):
@@ -879,6 +881,7 @@ Eventi possibili (solo se accadono davvero):
 {"tipo":"illustra","prompt":"English description of the scene for a realistic image, max 60 words, no names","didascalia":"didascalia italiana breve"} (solo nei momenti davvero memorabili: un mostro che appare, un colpo di scena, un luogo spettacolare; al massimo una volta ogni tanto)
 {"tipo":"negozio","nome":"Bottega di Bruna","merci":[{"nome":"Pozione di guarigione","prezzo":50}]} (apre il banco di un mercante: i giocatori comprano e vendono dall'app con le loro monete; prezzi in monete d'oro; {"tipo":"negozio","chiudi":true} quando escono)
 {"tipo":"tiro","pg":"<id>","prova":"Percezione","cd":15}
+{"tipo":"suono","nome":"porta|colpo|magia|monete|pozione|vittoria|sconfitta|raro|ferito|successo"} (effetto sonoro su tutti i telefoni, nei momenti giusti: una porta che si apre, un colpo, un incantesimo, monete, una vittoria)
 {"tipo":"nemico","nome":"Goblin","x":n,"y":n,"pf":7,"ca":15} (segnalino sulla mappa, griglia ${W}x${H})
 {"tipo":"combattimento","azione":"inizia|prossimo|fine"} (inizia quando scoppia uno scontro: l'app tira l'iniziativa e gestisce i turni; "prossimo" quando un PNG o nemico ha finito il suo turno; "fine" quando lo scontro è finito)
 {"tipo":"danno_nemico","nemico":"<id del segnalino>","quantita":n}
@@ -955,6 +958,7 @@ AVVENTURA PRONTA "${AVVENTURE[avv.id].titolo}": seguila (trovi scene, segreti e 
       case 'scena': return this.scena('master', true, { azione: e.azione, oggetto: e.oggetto, tipo: e.oggetto_tipo || e.tipoOggetto, nome: e.nome, x: e.x, y: e.y });
       case 'avventura': return this.scenaAvventura(e.scena);
       case 'negozio': if (e.chiudi) { await this.put('negozio', null); return this.tutti({ t: 'negozio', negozio: null }); } return this.apriNegozio(e);
+      case 'suono': if (SUONI.includes(e.nome)) this.tutti({ t: 'suono', nome: e.nome }); return;
       case 'illustra': this.ctx.waitUntil(e.prompt ? this.illustra(testo(e.prompt, 600), testo(e.didascalia, 200)) : this.illustraScena()); return;
       case 'tiro': { const p = await this.get('pg:' + e.pg); this.tutti({ t: 'richiesta_tiro', pg: e.pg, prova: testo(e.prova, 40), cd: e.cd | 0, nome: p?.nome }); return; }
       case 'reputazione': case 'fazione': {
