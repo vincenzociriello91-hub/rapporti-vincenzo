@@ -113,7 +113,7 @@ export class Tavolo extends DurableObject {
         case 'dado': return this.dado(io, me, capo, m);
         case 'segnalino': return this.segnalino(io, capo, m);
         case 'vai': if (!capo && (await this.get('campagna')).masterTipo === 'umano') return; return this.vai(io, me, m.nome, m.tipo);
-        case 'modifica_luogo': return this.modificaLuogo(io, me, capo, m);
+        case 'modifica_luogo': return this.modificaLuogo(io, me, me.ruolo === 'master', m); // solo il master umano; il master AI cambia lo stato con gli eventi
         case 'chat': { const ev = await this.diario('chat', m.testo, io); this.tutti({ t: 'diario', ev }); if (m.alMaster) await this.programmaMaster(true); return; }
         case 'parlato': return this.parlato(io, me, m);
         case 'comando': { const ev = await this.diario('comando', `${me.nome}: ${testo(m.testo, 300)}`, io); return this.tutti({ t: 'diario', ev }); }
