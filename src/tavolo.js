@@ -18,6 +18,8 @@ const RICETTE = [
 ];
 const RARI = [{ nome: 'Pozione di guarigione superiore', prezzo: 150 }, { nome: 'Mantello elfico', prezzo: 500 }, { nome: 'Corda di seta (15 m)', prezzo: 10 }, { nome: 'Pergamena di Scudo', prezzo: 80 }, { nome: 'Anello di calore', prezzo: 300 }, { nome: 'Pietra della buona sorte', prezzo: 450 }, { nome: 'Fiala di fuoco dell\'alchimista', prezzo: 50 }, { nome: 'Mappa di un tesoro sepolto', prezzo: 120 }, { nome: 'Stivali della leggerezza', prezzo: 350 }, { nome: 'Erbe medicinali', prezzo: 3 }, { nome: 'Minerale di ferro', prezzo: 4 }, { nome: 'Piume', prezzo: 1 }, { nome: 'Fiala', prezzo: 1 }];
 const SEGRETI = ['Sei in cerca di un fratello scomparso: chiedi di lui a ogni PNG importante.', 'Devi una grossa somma a un usuraio: metti da parte 200 monete senza dirlo agli altri.', 'Sei stato cacciato dalla tua gilda: riconquista il loro rispetto con un\'impresa.', 'Hai giurato di proteggere un compagno del gruppo, anche a costo della vita.', 'Colleziona un trofeo da ogni nemico importante sconfitto.', 'Un antico spirito ti parla in sogno: segui i suoi segni.', 'Vuoi diventare famoso: fai in modo che il tuo nome arrivi in ogni città.', 'Cerchi la spada di tuo nonno, perduta in un dungeon della regione.'];
+// il testo da leggere ad alta voce: via le indicazioni di regia "*(tono epico)*", asterischi e titoli markdown
+export function senzaRegia(t) { return String(t ?? '').replace(/\*?\((?:tono|voce|con tono|musica|pausa|sottofondo)[^)]*\)\*?/gi, '').replace(/[*_#`]+/g, '').replace(/[ \t]{2,}/g, ' ').trim(); }
 const REAZIONI = ['👏', '😂', '😱', '🔥', '❤️', '🎲'];
 const LINGUE = { it: 'italiano', en: 'inglese', es: 'spagnolo', fr: 'francese', de: 'tedesco' };
 const SUONI = ['porta', 'colpo', 'magia', 'monete', 'pozione', 'vittoria', 'sconfitta', 'raro', 'ferito', 'successo', 'critico', 'livello', 'tocco', 'tuono'];
@@ -546,6 +548,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
   }
   online() { return [...new Set(this.ctx.getWebSockets().map(ws => this.membroDi(ws)).filter(Boolean))]; }
   async diario(tipo, testoEv, chi) {
+    if (tipo === 'narrazione') testoEv = senzaRegia(testoEv);
     const d = await this.get('diario', []);
     d.push({ t: Date.now(), tipo, testo: testo(testoEv, 1500), chi: chi || null });
     while (d.length > 400) d.shift();
@@ -1289,11 +1292,11 @@ Rispondi SOLO JSON: {"notizie":"testo di massimo 80 parole da leggere ad alta vo
   async inviaRiassunto(ws) {
     const memoria = await this.get('memoria', '');
     const diario = await this.get('diario', []);
-    const r = await this.g({ contents: [{ parts: [{ text: `Sei il narratore di una campagna di D&D. Scrivi in italiano un "Nella puntata precedente..." di massimo 90 parole, da leggere ad alta voce, basato su:\n${memoria}\n${diario.slice(-30).map(d => d.testo).join('\n')}` }] }], generationConfig: { temperature: 0.7 } }, 'riassunto');
+    const r = await this.g({ contents: [{ parts: [{ text: `Sei il narratore di una campagna di D&D. Scrivi in italiano un "Nella puntata precedente..." di massimo 90 parole, da leggere ad alta voce (solo il testo da dire: niente indicazioni di tono, niente asterischi o titoli), basato su:\n${memoria}\n${diario.slice(-30).map(d => d.testo).join('\n')}` }] }], generationConfig: { temperature: 0.7 } }, 'riassunto');
     if (!r.ok) return this.invia(ws, { t: 'errore', msg: 'riassunto non disponibile' });
     const j = await r.json();
     const t = j.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('').trim();
-    this.tutti({ t: 'narra', testo: t || 'Nessuna avventura ancora da raccontare.', chi: 'master', riassunto: true });
+    this.tutti({ t: 'narra', testo: senzaRegia(t) || 'Nessuna avventura ancora da raccontare.', chi: 'master', riassunto: true });
   }
 
   // Frase che il riconoscitore nell'app non ha capito → operazioni sulla scheda
