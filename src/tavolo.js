@@ -141,6 +141,98 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
     } finally { this.inCorso.delete('v:' + nome); }
   }
 
+  // ---------- negozi: il gruppo compra e vende con le monete della scheda ----------
+  async apriNegozio(e) {
+    const nome = testo(e.nome, 60) || 'Mercante';
+    let merci = (Array.isArray(e.merci) ? e.merci : []).slice(0, 24).map(x => ({ nome: testo(x.nome, 60), prezzo: Math.max(0, Math.round(Number(x.prezzo) || 0)) })).filter(x => x.nome);
+    if (!merci.length) merci = CATALOGHI[e.tipo] || CATALOGHI[tipoNegozio(nome)];
+    const n = { nome, merci, aperto: Date.now() };
+    await this.put('negozio', n);
+    const ev = await this.diario('gruppo', `Si apre il banco: ${nome}.`, 'master'); this.tutti({ t: 'diario', ev });
+    this.tutti({ t: 'negozio', negozio: n });
+  }
+  async compra(ws, io, me, m) {
+    const n = await this.get('negozio'), merce = n?.merci.find(x => x.nome === m.merce), p = await this.get('pg:' + io);
+    if (!merce || !p) return;
+    if ((p.oro || 0) < merce.prezzo) return this.invia(ws, { t: 'errore', msg: `Non hai abbastanza monete (servono ${merce.prezzo} mo)` });
+    p.oro -= merce.prezzo;
+    const es = (p.equip || []).find(x => x.nome === merce.nome && !x.indossato);
+    if (es) es.qta = (es.qta || 1) + 1; else p.equip = [...(p.equip || []), { nome: merce.nome, qta: 1, indossato: false }];
+    await this.put('pg:' + io, p);
+    this.tutti({ t: 'scheda', per: io, pg: p, da: 'negozio' });
+    const ev = await this.diario('scheda', `${p.nome}: compra ${merce.nome} per ${merce.prezzo} mo da ${n.nome}`, io); this.tutti({ t: 'diario', ev });
+  }
+  async vendi(ws, io, me, m) {
+    const n = await this.get('negozio'), p = await this.get('pg:' + io), i = Number(m.indice), og = p?.equip?.[i];
+    if (!n || !og) return;
+    const prezzo = Math.max(0, Math.floor((n.merci.find(x => x.nome === og.nome)?.prezzo ?? prezzoBase(og.nome)) / 2));
+    if ((og.qta || 1) > 1) og.qta--; else p.equip.splice(i, 1);
+    p.oro = (p.oro || 0) + prezzo;
+    await this.put('pg:' + io, p);
+    this.tutti({ t: 'scheda', per: io, pg: p, da: 'negozio' });
+    const ev = await this.diario('scheda', `${p.nome}: vende ${og.nome} per ${prezzo} mo a ${n.nome}`, io); this.tutti({ t: 'diario', ev });
+  }
+
+  // ---------- schermo del master: PNG, incontri bilanciati, tesori ----------
+  async strumento(m) {
+    const membri = await this.get('membri', {}), pgs = [];
+    for (const id of Object.keys(membri)) { const p = await this.get('pg:' + id); if (p && membri[id].ruolo === 'giocatore') pgs.push(p); }
+    const luogo = await this.get('luogo:' + await this.get('luogoAttuale'));
+    const chiedi = async (testoP) => { const r = await this.g({ contents: [{ parts: [{ text: testoP }] }], generationConfig: { temperature: 0.9, responseMimeType: 'application/json' } }, 'interni'); return r.ok ? leggiJSON((await r.json()).candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '') : null; };
+    if (m.tipo === 'png') {
+      const ai = await chiedi(`Inventa un personaggio non giocante per una campagna di D&D, in italiano, adatto a: ${luogo?.nome || 'un villaggio'} (${luogo?.tipo || ''}). Rispondi SOLO JSON {"nome":"...","razza":"...","mestiere":"...","aspetto":"una frase","tratto":"modo di fare","segreto":"un segreto","battuta":"prima frase che dice"}`);
+      return ai?.nome ? ai : pngCasuale();
+    }
+    if (m.tipo === 'incontro') {
+      const diff = ['facile', 'media', 'difficile', 'mortale'].includes(m.difficolta) ? m.difficolta : 'media', col = { facile: 0, media: 1, difficile: 2, mortale: 3 }[diff];
+      const livelli = pgs.length ? pgs.map(p => Math.max(1, Math.min(20, p.livello || 1))) : [1, 1, 1, 1];
+      const budget = livelli.reduce((a, l) => a + SOGLIE_PX[l - 1][col], 0);
+      const ai = await chiedi(`Proponi un incontro di D&D 5e ${diff} per un gruppo di livelli ${livelli.join(', ')} (budget ${budget} PX, moltiplicatore per numero di mostri già considerato) in ${luogo?.nome || 'un luogo'} (${luogo?.tipo || 'aperto'}). Usa mostri dell'SRD con nomi italiani. Rispondi SOLO JSON {"mostri":[{"nome":"Goblin","numero":3,"gs":"1/4","pf":7,"ca":15}],"tattica":"come combattono, una frase"}`);
+      const mostri = Array.isArray(ai?.mostri) && ai.mostri.length ? ai.mostri.slice(0, 6).map(x => ({ nome: testo(x.nome, 30), numero: Math.max(1, Math.min(8, x.numero | 0 || 1)), gs: testo(x.gs, 6), pf: Number(x.pf) || 10, ca: Number(x.ca) || 12 })) : incontroCasuale(budget);
+      return { difficolta: diff, budget, mostri, tattica: testo(ai?.tattica, 300) };
+    }
+    if (m.tipo === 'tesoro') return tesoroCasuale(Math.max(0, Math.min(20, Number(m.gs) || 1)));
+    return null;
+  }
+  async piazzaNemici(mostri) {
+    const seg = await this.get('segnalini', {}), luogo = await this.get('luogo:' + await this.get('luogoAttuale'));
+    if (!luogo || !Array.isArray(mostri)) return;
+    const pgs = Object.values(seg).filter(x => x.tipo === 'pg'), cx = pgs.length ? Math.round(pgs.reduce((a, x) => a + x.x, 0) / pgs.length) : Math.floor(W / 2), cy = pgs.length ? Math.round(pgs.reduce((a, x) => a + x.y, 0) / pgs.length) : Math.floor(H / 2);
+    const libera = (x, y) => x > 0 && y > 0 && x < W - 1 && y < H - 1 && !'#wRT~'.includes(luogo.celle[y][x]) && !Object.values(seg).some(o => o.x === x && o.y === y) && !(luogo.oggetti || []).some(o => o.x === x && o.y === y);
+    let k = 0;
+    for (const mo of mostri.slice(0, 6)) for (let i = 0; i < Math.min(8, mo.numero || 1); i++) {
+      let fatto = false;
+      for (let r = 4; r < 12 && !fatto; r++) for (let t = 0; t < 24 && !fatto; t++) { const a = (k * 1.7 + t) * 0.5, x = cx + Math.round(Math.cos(a) * r), y = cy + Math.round(Math.sin(a) * r * 0.7); if (libera(x, y)) { const nome = (mo.numero || 1) > 1 ? `${testo(mo.nome, 24)} ${i + 1}` : testo(mo.nome, 30); seg['n_' + Date.now().toString(36) + k] = { x, y, nome, colore: '#d84b3c', tipo: 'nemico', pf: Number(mo.pf) || 10, ca: Number(mo.ca) || 12 }; fatto = true; k++; } }
+    }
+    await this.put('segnalini', seg); this.tutti({ t: 'segnalini', segnalini: seg });
+    for (const mo of mostri.slice(0, 6)) this.ctx.waitUntil(this.disegnaMostro(mo.nome));
+  }
+
+  // ---------- libro della campagna: riepiloghi, illustrazioni e narrazioni ----------
+  async libro() {
+    const [c, riepiloghi, diario, membri] = await Promise.all([this.get('campagna'), this.get('riepiloghi', []), this.get('diario', []), this.get('membri', {})]);
+    const pg = []; for (const id of Object.keys(membri)) { const p = await this.get('pg:' + id); if (p) pg.push(p); }
+    return { campagna: { nome: c.nome, regole: c.regole, ambientazione: c.ambientazione, sessione: c.sessione, creata: c.creata }, riepiloghi, pg, diario: diario.filter(d => ['narrazione', 'illustrazione', 'luogo', 'sistema', 'riepilogo', 'combattimento'].includes(d.tipo)) };
+  }
+
+  // ---------- sessione zero: il master aiuta a creare il personaggio parlando ----------
+  async sessioneZero(io, m) {
+    const membri = await this.get('membri', {}), altri = [];
+    for (const id of Object.keys(membri)) { if (id === io) continue; const p = await this.get('pg:' + id); if (p) altri.push(`${p.nome} (${p.razza} ${p.classe})${p.note ? ': ' + testo(p.note, 160) : ''}`); }
+    const c = await this.get('campagna'), razze = (m.razze || []).slice(0, 20).map(x => testo(x, 30)), classi = (m.classi || []).slice(0, 20).map(x => testo(x, 30));
+    const storia = (Array.isArray(m.storia) ? m.storia : []).slice(-12).map(x => `${x.chi === 'io' ? 'Giocatore' : 'Master'}: ${testo(x.testo, 400)}`).join('\n');
+    const risposte = (m.storia || []).filter(x => x.chi === 'io').length;
+    const r = await this.g({ contents: [{ parts: [{ text: `Sei il master di una campagna di D&D (${c.ambientazione}, regole ${c.regole}). Aiuti un giocatore a creare il suo personaggio con una breve chiacchierata, in italiano, tono caldo. Fai UNA domanda alla volta, breve (concetto del personaggio, passato, carattere, legame con gli altri personaggi, aspetto). ${risposte >= 5 ? 'Ora hai abbastanza: fai la proposta.' : 'Dopo al massimo 5 risposte fai la proposta.'}
+Altri personaggi del gruppo: ${altri.join('; ') || 'nessuno ancora'}.
+Razze possibili: ${razze.join(', ')}. Classi possibili: ${classi.join(', ')}.
+Conversazione finora:\n${storia || '(inizio)'}
+Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"una delle razze","classe":"una delle classi","allineamento":"...","aspetto":{"pelle":"chiara|olivastra|scura|molto scura","capelli":"corti|lunghi|coda|ricci|cresta|calvo","coloreCapelli":"nero|castano|biondo|rosso|bianco|grigio","barba":"nessuna|corta|lunga","occhi":"marroni|azzurri|verdi|grigi|ambra","corporatura":"normale|snella|robusta","figura":"maschile|femminile"},"storia":"passato in massimo 120 parole","legami":"legami con gli altri personaggi, una o due frasi"}}` }] }], generationConfig: { temperature: 0.85, responseMimeType: 'application/json' } }, 'comandi');
+    if (!r.ok) return { errore: 'Il master non risponde, riprova tra poco' };
+    const out = leggiJSON((await r.json()).candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '') || {};
+    if (out.proposta) { const pr = out.proposta; if (!razze.includes(pr.razza)) pr.razza = razze[0]; if (!classi.includes(pr.classe)) pr.classe = classi.includes('Guerriero') ? 'Guerriero' : classi[0]; return { proposta: pr }; }
+    return { domanda: testo(out.domanda, 400) || 'Raccontami di più sul tuo personaggio.' };
+  }
+
   // prompt inglese per la scena attuale, dalle ultime narrazioni
   async illustraScena(forza) {
     const diario = await this.get('diario', []), luogo = await this.get('luogo:' + await this.get('luogoAttuale'));
@@ -259,6 +351,15 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
         case 'combattimento': return this.combattimento(io, me, capo, m);
         case 'area': return this.area(io, capo, m);
         case 'gruppo': return this.gruppo(io, me, m);
+        case 'apri_negozio': if (!capo) return; return this.apriNegozio({ nome: m.nome, tipo: m.tipo, merci: m.merci });
+        case 'chiudi_negozio': if (!capo) return; await this.put('negozio', null); return this.tutti({ t: 'negozio', negozio: null });
+        case 'compra': return this.compra(ws, io, me, m);
+        case 'vendi': return this.vendi(ws, io, me, m);
+        case 'strumento': if (!capo) return; return this.invia(ws, { t: 'strumento', tipo: m.tipo, ris: await this.strumento(m) });
+        case 'piazza_nemici': if (!capo) return; return this.piazzaNemici(m.mostri);
+        case 'note_master': if (!capo) return; if (typeof m.testo === 'string') await this.put('noteMaster', testo(m.testo, 8000)); return this.invia(ws, { t: 'note_master', testo: await this.get('noteMaster', '') });
+        case 'libro': return this.invia(ws, { t: 'libro', ...(await this.libro()) });
+        case 'sessione_zero': return this.invia(ws, { t: 'sessione_zero', ...(await this.sessioneZero(io, m)) });
         case 'relazione': {
           const rel = await this.get('relazioni', {}); const LIV = ['sconosciuti', 'conoscenti', 'amici', 'amici stretti', 'compagni di vita', 'famiglia', 'rivali'];
           if (!membri[m.con] || m.con === io || !LIV.includes(m.livello)) return;
@@ -670,6 +771,7 @@ Eventi possibili (solo se accadono davvero):
 {"tipo":"edificio","edificio":"<id edificio del luogo attuale>","stato":"bruciato|distrutto|danneggiato|integro"}
 {"tipo":"scena","azione":"sposta|rompi|brucia|togli|aggiungi","oggetto":"<id oggetto di scena>","tipoOggetto":"botte|cassa|tavolo|...","nome":"...","x":n,"y":n} (oggetti visibili sulla mappa: usalo quando un oggetto viene spostato, rotto, bruciato, preso o compare; per "aggiungi" servono tipoOggetto, x, y)
 {"tipo":"illustra","prompt":"English description of the scene for a realistic image, max 60 words, no names","didascalia":"didascalia italiana breve"} (solo nei momenti davvero memorabili: un mostro che appare, un colpo di scena, un luogo spettacolare; al massimo una volta ogni tanto)
+{"tipo":"negozio","nome":"Bottega di Bruna","merci":[{"nome":"Pozione di guarigione","prezzo":50}]} (apre il banco di un mercante: i giocatori comprano e vendono dall'app con le loro monete; prezzi in monete d'oro; {"tipo":"negozio","chiudi":true} quando escono)
 {"tipo":"tiro","pg":"<id>","prova":"Percezione","cd":15}
 {"tipo":"nemico","nome":"Goblin","x":n,"y":n,"pf":7,"ca":15} (segnalino sulla mappa, griglia ${W}x${H})
 {"tipo":"combattimento","azione":"inizia|prossimo|fine"} (inizia quando scoppia uno scontro: l'app tira l'iniziativa e gestisce i turni; "prossimo" quando un PNG o nemico ha finito il suo turno; "fine" quando lo scontro è finito)
@@ -740,6 +842,7 @@ Durante il combattimento rispetta l'ordine di iniziativa e gioca tu i turni dei 
       case 'luogo': return this.vai('master', { nome: 'Master' }, e.nome, e.tipoLuogo);
       case 'edificio': return this.modificaLuogo('master', {}, true, { edificio: e.edificio, stato: e.stato });
       case 'scena': return this.scena('master', true, { azione: e.azione, oggetto: e.oggetto, tipo: e.oggetto_tipo || e.tipoOggetto, nome: e.nome, x: e.x, y: e.y });
+      case 'negozio': if (e.chiudi) { await this.put('negozio', null); return this.tutti({ t: 'negozio', negozio: null }); } return this.apriNegozio(e);
       case 'illustra': this.ctx.waitUntil(e.prompt ? this.illustra(testo(e.prompt, 600), testo(e.didascalia, 200)) : this.illustraScena()); return;
       case 'tiro': { const p = await this.get('pg:' + e.pg); this.tutti({ t: 'richiesta_tiro', pg: e.pg, prova: testo(e.prova, 40), cd: e.cd | 0, nome: p?.nome }); return; }
       case 'reputazione': case 'fazione': {
@@ -901,6 +1004,39 @@ export function wav16k(pcm, rate) {
 }
 // Illustrazioni: FLUX.1 schnell su Workers AI (quota gratuita di Cloudflare). IMG_FINTA nelle prove.
 const SCENE_EN = { citta: 'a bustling medieval fantasy city with stone houses, cobblestone streets and market stalls', villaggio: 'a small medieval fantasy village with thatched cottages and dirt roads', porto: 'a medieval fantasy harbor with wooden docks, ships and warehouses', taverna: 'the cozy interior of a medieval fantasy tavern with a roaring fireplace, wooden tables and patrons', dungeon: 'a dark ancient dungeon with stone corridors lit by flickering torches', grotta: 'a vast natural cave with stalagmites, glowing mushrooms and underground pools', castello: 'a mighty medieval castle with towers, banners and a courtyard', foresta: 'a dense ancient forest with towering trees, mist and a winding path', interno: 'the interior of a medieval fantasy building with furniture and candlelight', aperto: 'open medieval fantasy countryside with rolling hills and a dirt road' };
+// Cataloghi dei negozi (prezzi dell'SRD 5.1 in monete d'oro, arrotondati)
+export const CATALOGHI = {
+  emporio: [['Razioni (1 giorno)', 1], ['Corda (15 m)', 1], ['Torcia', 1], ['Zaino', 2], ['Otre', 1], ['Sacco a pelo', 1], ['Lanterna', 5], ['Olio (ampolla)', 1], ['Kit da guaritore', 5], ['Acciarino', 1], ['Chiodi da rocciatore (10)', 1], ['Rampino', 2]],
+  fabbro: [['Pugnale', 2], ['Spada corta', 10], ['Spada lunga', 15], ['Ascia da battaglia', 10], ['Mazza', 5], ['Martello da guerra', 15], ['Lancia', 1], ['Arco corto', 25], ['Frecce (20)', 1], ['Scudo', 10], ['Armatura di cuoio', 10], ['Camicia di maglia', 50], ['Cotta di maglia', 75], ['Elmo', 10]],
+  alchimista: [['Pozione di guarigione', 50], ['Antidoto', 50], ["Fuoco dell'alchimista", 50], ['Acqua santa', 25], ['Pozione di guarigione superiore', 150], ['Erbe medicinali', 5]],
+  magia: [['Pergamena di Dardo incantato', 50], ['Pergamena di Cura ferite', 50], ['Pergamena di Scudo', 50], ['Bacchetta (focus arcano)', 10], ['Simbolo sacro', 5], ['Amuleto', 5], ['Libro degli incantesimi', 50]]
+};
+for (const k of Object.keys(CATALOGHI)) CATALOGHI[k] = CATALOGHI[k].map(([nome, prezzo]) => ({ nome, prezzo }));
+export function tipoNegozio(nome) { const n = String(nome).toLowerCase(); return /fabbr|armaiol|armi|forgia/.test(n) ? 'fabbro' : /alchim|erbor|speziale|pozion|guaritor/.test(n) ? 'alchimista' : /mago|arcan|magic|incant|tempio/.test(n) ? 'magia' : 'emporio'; }
+export function prezzoBase(nome) { for (const c of Object.values(CATALOGHI)) { const x = c.find(m => m.nome.toLowerCase() === String(nome).toLowerCase()); if (x) return x.prezzo; } return /pozione|pergamena/i.test(nome) ? 50 : /spada|ascia|martello|arco/i.test(nome) ? 10 : 2; }
+// PX per personaggio per livello (facile, media, difficile, mortale) — SRD 5.1
+export const SOGLIE_PX = [[25, 50, 75, 100], [50, 100, 150, 200], [75, 150, 225, 400], [125, 250, 375, 500], [250, 500, 750, 1100], [300, 600, 900, 1400], [350, 750, 1100, 1700], [450, 900, 1400, 2100], [550, 1100, 1600, 2400], [600, 1200, 1900, 2800], [800, 1600, 2400, 3600], [1000, 2000, 3000, 4500], [1100, 2200, 3400, 5100], [1250, 2500, 3800, 5700], [1400, 2800, 4300, 6400], [1600, 3200, 4800, 7200], [2000, 3900, 5900, 8800], [2100, 4200, 6300, 9500], [2400, 4900, 7300, 10900], [2800, 5700, 8500, 12700]];
+const BESTIARIO = [['Bandito', '1/8', 25, 11, 12], ['Goblin', '1/4', 50, 7, 15], ['Lupo', '1/4', 50, 11, 13], ['Scheletro', '1/4', 50, 13, 13], ['Zombi', '1/4', 50, 22, 8], ['Orco', '1/2', 100, 15, 13], ['Hobgoblin', '1/2', 100, 11, 18], ['Gnoll', '1/2', 100, 22, 15], ['Bugbear', '1', 200, 27, 16], ['Lupo crudele', '1', 200, 37, 14], ['Ragno gigante', '1', 200, 26, 14], ['Ogre', '2', 450, 59, 11], ['Ghoul', '1', 200, 22, 12], ['Orsogufo', '3', 700, 59, 13], ['Troll', '5', 1800, 84, 15], ['Giovane drago verde', '8', 3900, 136, 18], ['Giovane drago rosso', '10', 5900, 178, 18]];
+export function incontroCasuale(budget) {
+  const adatti = BESTIARIO.filter(b => b[2] <= budget); const b = adatti.length ? adatti[Math.floor(Math.random() * adatti.length)] : BESTIARIO[0];
+  const numero = Math.max(1, Math.min(8, Math.floor(budget / (b[2] * 1.5))));
+  return [{ nome: b[0], numero, gs: b[1], pf: b[3], ca: b[4] }];
+}
+const d = n => 1 + Math.floor(Math.random() * n);
+export function tesoroCasuale(gs) {
+  const fascia = gs <= 4 ? 0 : gs <= 10 ? 1 : gs <= 16 ? 2 : 3;
+  const oro = [() => (d(6) + d(6)) * 10, () => (d(6) + d(6) + d(6)) * 50, () => (d(6) + d(6) + d(6) + d(6)) * 250, () => (d(6) + d(6) + d(6) + d(6) + d(6)) * 1000][fascia]();
+  const gemme = [['Agata', 10], ['Ematite', 10], ['Corniola', 50], ['Onice', 50], ['Ambra', 100], ['Perla nera', 500], ['Smeraldo', 1000], ['Diamante', 5000]];
+  const magici = [['Pozione di guarigione', 'comune'], ['Pergamena di Dardo incantato', 'comune'], ['Pozione di arrampicata', 'comune'], ['Pozione di guarigione superiore', 'non comune'], ['Borsa conservante', 'non comune'], ['Arma +1', 'non comune'], ['Mantello di protezione', 'non comune'], ['Anello di protezione', 'raro'], ['Arma +2', 'raro'], ['Bacchetta delle palle di fuoco', 'raro']];
+  const oggetti = [];
+  for (let i = 0; i < d(2 + fascia); i++) { const g = gemme[Math.min(gemme.length - 1, Math.floor(Math.random() * (3 + fascia * 2)))]; oggetti.push(`${g[0]} (${g[1]} mo)`); }
+  for (let i = 0; i < (Math.random() < 0.5 + fascia * 0.15 ? d(1 + fascia) : 0); i++) { const m = magici[Math.min(magici.length - 1, Math.floor(Math.random() * (4 + fascia * 2)))]; oggetti.push(`${m[0]} (${m[1]})`); }
+  return { oro, oggetti };
+}
+export function pngCasuale() {
+  const p = a => a[Math.floor(Math.random() * a.length)];
+  return { nome: p(['Bruna', 'Aldo', 'Gerlinda', 'Tobia', 'Mirella', 'Corrado', 'Isotta', 'Brenno', 'Fiamma', 'Ulrico']) + ' ' + p(['Ventofreddo', 'Pietrascura', 'dal Molino', 'Mezzaluna', 'Barbagrigia', 'Corvonero']), razza: p(['umana', 'umano', 'nano', 'elfa', 'halfling', 'mezzorco', 'gnoma']), mestiere: p(['locandiere', 'fabbra', 'guardia', 'mercante', 'erborista', 'barcaiolo', 'sacerdotessa', 'cacciatore']), aspetto: p(['cicatrice sul sopracciglio', 'mani macchiate di inchiostro', 'grembiule sempre sporco', 'occhi chiarissimi', 'denti d\'oro']), tratto: p(['parla a voce bassissima', 'ride per niente', 'diffida degli stranieri', 'esagera ogni storia', 'conta sempre le monete']), segreto: p(['deve soldi alla gilda dei ladri', 'è una spia del barone', 'nasconde un fratello ricercato', 'ha visto il mostro della palude', 'è di sangue nobile']), battuta: p(['"Non è un buon momento per fare domande."', '"Se pagate, parlo."', '"Siete nuovi da queste parti, eh?"', '"Ho una storia per voi, ma vi costerà."']) };
+}
 // "Goblin 2", "goblin arciere" -> "goblin arciere"; umanoidi e orchi usano le figure LPC
 export const UMANOIDI = /bandit|brigant|guardi|soldat|cultist|mago|strega|ladro|assassin|cavalier|mercenar|predon|pirat|negromant|sacerdot|capitan|stregon|goblin|orco|orchi|hobgoblin|bugbear|drow|elfo oscuro/;
 export function nomeMostro(n) { return testo(n, 40).toLowerCase().replace(/[^a-zà-ù ]+/g, ' ').replace(/\s+/g, ' ').trim(); }
