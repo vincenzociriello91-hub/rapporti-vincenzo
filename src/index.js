@@ -115,7 +115,7 @@ async function provaAssistente(env) {
   const t0 = Date.now();
   const r = await chiamaGemini(env, { contents: [{ parts: [{ text: 'Rispondi solo: ok' }] }], generationConfig: { temperature: 0 } });
   const testo = r.ok ? ((await r.json()).candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '') : (await r.text()).slice(0, 300);
-  return risposta(200, { stato: r.status, ms: Date.now() - t0, modello: r.modello || '-', testo });
+  return risposta(200, { stato: r.status, ms: Date.now() - t0, modello: r.modello || '-', testo, tentativi: r.tentativi || [] });
 }
 
 

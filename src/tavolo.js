@@ -1055,17 +1055,17 @@ async function chiamaGemini(env, corpo, leggero) {
   // ogni modello ha la sua quota gratuita: se uno è esaurito (429) o ritirato (404) si passa al successivo
   const LITE = ['gemini-flash-lite-latest', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-2.5-flash-lite'], FLASH = ['gemini-flash-latest', 'gemini-3.5-flash', 'gemini-3-flash-preview', 'gemini-2.5-flash'];
   const modelli = [...new Set(leggero ? [...LITE, ...FLASH] : [env.GEMINI_MODEL || 'gemini-flash-latest', ...FLASH, ...LITE])];
-  let r, peggiore = null; const inizio = Date.now();
+  let r, peggiore = null; const inizio = Date.now(), tentativi = [];
   for (const modello of modelli) {
     const url = `${env.GEMINI_BASE || 'https://generativelanguage.googleapis.com'}/v1beta/models/${encodeURIComponent(modello)}:generateContent?key=${encodeURIComponent(env.GEMINI_KEY)}`;
     // un modello che pensa troppo a lungo (fino a 524 dopo 100 s) blocca il turno: dopo 30 s si passa al successivo
     if (Date.now() - inizio > 70000) break;
-    const invia = c => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(c), signal: AbortSignal.timeout(30000) }).catch(() => new Response('{}', { status: 504 }));
+    const invia = c => { const t = Date.now(); return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(c), signal: AbortSignal.timeout(30000) }).catch(() => new Response('{}', { status: 504 })).then(x => { tentativi.push({ modello, ms: Date.now() - t, stato: x.status, pensiero: c.generationConfig?.thinkingConfig ? JSON.stringify(c.generationConfig.thinkingConfig) : 'pieno' }); return x; }); };
     r = await invia({ ...corpo, generationConfig: { ...corpo.generationConfig, thinkingConfig: { thinkingBudget: 0 } } });
     // Gemini 3 non accetta thinkingBudget 0: si prova il ragionamento minimo prima di quello pieno (lento, ~24 s per turno)
     if (r.status === 400) r = await invia({ ...corpo, generationConfig: { ...corpo.generationConfig, thinkingConfig: { thinkingLevel: 'minimal' } } });
     if (r.status === 400) r = await invia(corpo);
-    if (![404, 429, 500, 502, 503, 504, 524].includes(r.status)) { r.modello = modello; return r; }
+    if (![404, 429, 500, 502, 503, 504, 524].includes(r.status)) { r.modello = modello; r.tentativi = tentativi; return r; }
     if (r.status !== 404) peggiore = r; // un 404 (modello ritirato) non deve nascondere la quota finita
   }
   return peggiore || r;
