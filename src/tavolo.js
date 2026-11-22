@@ -18,6 +18,8 @@ const RICETTE = [
 ];
 const RARI = [{ nome: 'Pozione di guarigione superiore', prezzo: 150 }, { nome: 'Mantello elfico', prezzo: 500 }, { nome: 'Corda di seta (15 m)', prezzo: 10 }, { nome: 'Pergamena di Scudo', prezzo: 80 }, { nome: 'Anello di calore', prezzo: 300 }, { nome: 'Pietra della buona sorte', prezzo: 450 }, { nome: 'Fiala di fuoco dell\'alchimista', prezzo: 50 }, { nome: 'Mappa di un tesoro sepolto', prezzo: 120 }, { nome: 'Stivali della leggerezza', prezzo: 350 }, { nome: 'Erbe medicinali', prezzo: 3 }, { nome: 'Minerale di ferro', prezzo: 4 }, { nome: 'Piume', prezzo: 1 }, { nome: 'Fiala', prezzo: 1 }];
 const SEGRETI = ['Sei in cerca di un fratello scomparso: chiedi di lui a ogni PNG importante.', 'Devi una grossa somma a un usuraio: metti da parte 200 monete senza dirlo agli altri.', 'Sei stato cacciato dalla tua gilda: riconquista il loro rispetto con un\'impresa.', 'Hai giurato di proteggere un compagno del gruppo, anche a costo della vita.', 'Colleziona un trofeo da ogni nemico importante sconfitto.', 'Un antico spirito ti parla in sogno: segui i suoi segni.', 'Vuoi diventare famoso: fai in modo che il tuo nome arrivi in ogni città.', 'Cerchi la spada di tuo nonno, perduta in un dungeon della regione.'];
+const REAZIONI = ['👏', '😂', '😱', '🔥', '❤️', '🎲'];
+const LINGUE = { it: 'italiano', en: 'inglese', es: 'spagnolo', fr: 'francese', de: 'tedesco' };
 const SUONI = ['porta', 'colpo', 'magia', 'monete', 'pozione', 'vittoria', 'sconfitta', 'raro', 'ferito', 'successo', 'critico', 'livello', 'tocco', 'tuono'];
 const ATTESA_MASTER = 3500; // ms di silenzio prima che il master AI risponda a quanto detto
 
@@ -35,6 +37,7 @@ const testo = (s, max = 2000) => String(s ?? '').slice(0, max);
 const COLORI = ['#e8b04b', '#5b8fd9', '#c97bd0', '#6cc08a', '#e2735f', '#4fc3c8', '#d9d36b', '#a98be8'];
 
 export class Tavolo extends DurableObject {
+  reazioni = new Map(); traduzioni = new Map(); // in memoria: si azzerano quando la stanza dorme
   async fetch(req) {
     if (req.method === 'POST' && req.headers.get('x-tavolo-interno') === '1') return this.interno(await req.json());
     const md = new URL(req.url).pathname.match(/\/media\/(voce|img)\/([a-z0-9]{4,30})$/);
@@ -224,6 +227,64 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
     if (!prima || !dopo || prima.pf === dopo.pf) return;
     const d = (dopo.pf || 0) - (prima.pf || 0);
     await this.conta(id, d < 0 ? { danniSubiti: -d, ...(prima.pf > 0 && dopo.pf <= 0 ? { cadute: 1 } : {}) } : { cure: d });
+  }
+  // ---------- serate, traduzioni, note sulla mappa, giochi di taverna ----------
+  // calendario delle serate: il master propone, ognuno risponde ci sono / non ci sono (il promemoria lo mette il calendario del telefono)
+  async serata(io, me, capo, m) {
+    let l = (await this.get('serate', [])).filter(x => x.t > Date.now() - 86400000);
+    if (m.t === 'serata_nuova') { if (!capo) return; const t = Date.parse(m.quando); if (!(t > Date.now() - 3600000)) return; l.push({ id: 's' + Date.now().toString(36), t, nota: testo(m.nota, 120), risposte: { [io]: true } }); l.sort((a, b) => a.t - b.t); l = l.slice(0, 12); await this.annuncia(`Prossima serata: ${new Date(t).toLocaleString('it-IT', { timeZone: 'Europe/Rome', weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' })}${m.nota ? ' (' + testo(m.nota, 120) + ')' : ''}.`); }
+    else if (m.t === 'serata_risposta') { const x = l.find(y => y.id === m.id); if (!x || me.ruolo === 'spettatore') return; x.risposte[io] = !!m.ci; }
+    else { if (!capo) return; l = l.filter(y => y.id !== m.id); }
+    await this.put('serate', l); this.tutti({ t: 'serate', serate: l });
+  }
+  async traduci(ws, m) {
+    const lingua = LINGUE[m.lingua], t = testo(m.testo, 1500); if (!lingua || !t) return;
+    const k = m.lingua + ':' + t; if (this.traduzioni.has(k)) return this.invia(ws, { t: 'traduzione', id: m.id, testo: this.traduzioni.get(k) });
+    const r = await this.g({ contents: [{ parts: [{ text: `Traduci in ${lingua} questo testo di una partita di D&D, mantenendo nomi propri e tono. Rispondi solo con la traduzione.\n\n${t}` }] }], generationConfig: { temperature: 0.2, maxOutputTokens: 900 } }, 'regole');
+    if (!r.ok) return this.invia(ws, { t: 'traduzione', id: m.id, errore: true });
+    const out = ((await r.json()).candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('').trim();
+    if (this.traduzioni.size > 300) this.traduzioni.clear(); this.traduzioni.set(k, out);
+    this.invia(ws, { t: 'traduzione', id: m.id, testo: out });
+  }
+  // annotazioni dei giocatori sulla mappa del luogo (restano con il luogo)
+  async notaMappa(io, me, m) {
+    const lid = await this.get('luogoAttuale'), luogo = lid && await this.get('luogo:' + lid); if (!luogo) return;
+    let l = await this.get('note:' + lid, []);
+    if (m.togli) { const capo = me.ruolo === 'master' || me.admin; l = l.filter(n => n.id !== m.togli || (n.chi !== io && !capo)); }
+    else { const x = m.x | 0, y = m.y | 0, t = testo(m.testo, 80).trim(); if (!t || x < 0 || y < 0 || x >= luogo.w || y >= luogo.h) return; const p = await this.get('pg:' + io); l.push({ id: 'n' + Date.now().toString(36), x, y, testo: t, chi: io, nome: p?.nome || me.nome }); l = l.slice(-60); }
+    await this.put('note:' + lid, l); this.tutti({ t: 'note_mappa', luogo: lid, note: l });
+  }
+  // giochi di taverna con le monete vere della scheda: dadi (2d6, vince il più alto) o carte (la carta più alta)
+  async giocoTaverna(io, me, capo, m) {
+    let g = await this.get('giocoTaverna', null); const paga = async (id, d) => { const p = await this.get('pg:' + id); if (!p) return false; if (d < 0 && (p.oro || 0) < -d) return false; p.oro = (p.oro || 0) + d; await this.put('pg:' + id, p); this.tutti({ t: 'scheda', per: id, pg: p }); return true; };
+    if (m.t === 'gioco_apri') {
+      if (g) return; const posta = Math.max(1, Math.min(100, m.posta | 0)), tipo = m.tipo === 'carte' ? 'carte' : 'dadi';
+      if (!await paga(io, -posta)) return this.invia(this.wsDi(io), { t: 'errore', msg: `Servono ${posta} mo nella scheda per giocare` });
+      g = { tipo, posta, da: io, giocatori: [io], t: Date.now() }; await this.annuncia(`${me.nome} apre un tavolo di ${tipo === 'dadi' ? 'dadi' : 'carte'}: posta ${posta} mo. Chi gioca?`, 'gruppo');
+    } else if (m.t === 'gioco_entra') {
+      if (!g || g.giocatori.includes(io) || g.giocatori.length >= 8) return;
+      if (!await paga(io, -g.posta)) return this.invia(this.wsDi(io), { t: 'errore', msg: `Servono ${g.posta} mo nella scheda per giocare` });
+      g.giocatori.push(io);
+    } else if (m.t === 'gioco_annulla') {
+      if (!g || (g.da !== io && !capo)) return; for (const id of g.giocatori) await paga(id, g.posta); g = null; await this.annuncia('Il tavolo da gioco si chiude: monete restituite.', 'gruppo');
+    } else {
+      if (!g || (g.da !== io && !capo) || g.giocatori.length < 2) return;
+      const membri = await this.get('membri', {}), nomeDi = async id => (await this.get('pg:' + id))?.nome || membri[id]?.nome || '?';
+      const VAL = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'Fante', 'Regina', 'Re', 'Asso'], SEMI = ['cuori', 'quadri', 'fiori', 'picche'], mazzo = [];
+      for (let v = 0; v < 13; v++) for (const s2 of SEMI) mazzo.push({ v, s: s2 });
+      const ris = [];
+      for (const id of g.giocatori) {
+        if (g.tipo === 'dadi') { const a = 1 + Math.floor(Math.random() * 6), b = 1 + Math.floor(Math.random() * 6); ris.push({ id, punti: a + b, testo: `${a}+${b}` }); }
+        else { const c2 = mazzo.splice(Math.floor(Math.random() * mazzo.length), 1)[0]; ris.push({ id, punti: c2.v, testo: `${VAL[c2.v]} di ${c2.s}` }); }
+      }
+      const max = Math.max(...ris.map(r => r.punti)), vincitori = ris.filter(r => r.punti === max), piatto = g.posta * g.giocatori.length, quota = Math.floor(piatto / vincitori.length);
+      for (const v of vincitori) await paga(v.id, quota);
+      const righe = []; for (const r of ris) righe.push(`${await nomeDi(r.id)} ${r.testo}`);
+      const nomiV = []; for (const v of vincitori) nomiV.push(await nomeDi(v.id));
+      await this.annuncia(`${g.tipo === 'dadi' ? 'Dadi' : 'Carte'} sul tavolo: ${righe.join(', ')}. ${vincitori.length > 1 ? 'Pareggio tra ' + nomiV.join(' e ') + `: ${quota} mo a testa` : `Vince ${nomiV[0]}: ${quota} mo`}!`, 'gruppo');
+      this.tutti({ t: 'suono', nome: 'monete' }); g = null;
+    }
+    await this.put('giocoTaverna', g); this.tutti({ t: 'gioco_taverna', gioco: g });
   }
   // ---------- mondo vivo: bacheca, voto, enigmi, nemesi, scelte, sogni, segreti, minacce, reputazione, compagni, casa, mestieri ----------
   async mondoVivo(vedeSegreti) {
@@ -502,7 +563,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     const io = membri[perMembro];
     for (const id of Object.keys(membri)) { const s = await this.get('pg:' + id); if (s) pg[id] = id === perMembro || io?.ruolo === 'master' ? s : { ...s, segreto: undefined, sogni: undefined }; }
     const vedeSegreti = io && (io.ruolo === 'master' || io.admin);
-    const membriPubblici = Object.fromEntries(Object.entries(membri).map(([id, m]) => [id, { nome: m.nome, ruolo: m.ruolo, colore: m.colore, admin: !!m.admin }]));
+    const membriPubblici = Object.fromEntries(Object.entries(membri).map(([id, m]) => [id, { nome: m.nome, ruolo: m.ruolo, colore: m.colore, admin: !!m.admin, presenze: m.presenze || 0 }]));
     return {
       campagna: { ...campagna, invito: vedeSegreti || campagna.masterTipo === 'ai' ? campagna.invito : undefined },
       membri: membriPubblici, online: this.online(), pg,
@@ -511,7 +572,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
       mondo: await this.get('mondo', { fazioni: {}, valute: {}, viaggi: [], notizie: [] }), relazioni: await this.get('relazioni', {}),
       combattimento: await this.get('combattimento', null), aree: await this.get('aree', []), gruppo: await this.get('gruppo', { oro: 0, oggetti: [] }),
       mostri: await this.get('mostri', {}), volti: await this.get('volti', {}), negozio: await this.get('negozio', null),
-      png: await this.get('png', {}), memoriale: await this.get('memoriale', []), ...(await this.mondoVivo(vedeSegreti)),
+      png: await this.get('png', {}), memoriale: await this.get('memoriale', []), ...(await this.mondoVivo(vedeSegreti)), serate: await this.get('serate', []), giocoTaverna: await this.get('giocoTaverna', null), noteMappa: { luogo: await this.get('luogoAttuale'), note: await this.get('note:' + await this.get('luogoAttuale'), []) }, avventure: Object.entries(AVVENTURE).map(([id, a]) => ({ id, titolo: a.titolo, livelli: a.livelli, tipo: a.tipo, seguito: a.seguito })),
       avventura: vedeSegreti ? await this.avventuraPerMaster() : undefined,
       memoria: vedeSegreti ? memoria : undefined, suggerimenti: vedeSegreti ? suggerimenti.slice(-30) : undefined,
       costi: vedeSegreti ? await this.get('costi', null) : undefined
@@ -548,6 +609,11 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
         case 'comando': { const ev = await this.diario('comando', `${me.nome}: ${testo(m.testo, 300)}`, io); return this.tutti({ t: 'diario', ev }); }
         case 'storia': return this.storia(io, m);
         case 'missione_accetta': return this.missioneAccetta(io, String(m.id || ''));
+        case 'reazione': { if (!REAZIONI.includes(m.emoji)) return; const ora = Date.now(); if (ora - (this.reazioni.get(io) || 0) < 1200) return; this.reazioni.set(io, ora); return this.tutti({ t: 'reazione', emoji: m.emoji, nome: me.nome }); }
+        case 'traduci': return this.traduci(ws, m);
+        case 'nota_mappa': if (me.ruolo === 'spettatore') return; return this.notaMappa(io, me, m);
+        case 'gioco_apri': case 'gioco_entra': case 'gioco_via': case 'gioco_annulla': if (me.ruolo === 'spettatore') return; return this.giocoTaverna(io, me, capo, m);
+        case 'serata_nuova': case 'serata_risposta': case 'serata_togli': return this.serata(io, me, capo, m);
         case 'missione_nuova': if (!capo) return; return this.eventoMondo({ tipo: 'missione', titolo: m.titolo, descrizione: m.descrizione, ricompensa: m.ricompensa });
         case 'voto_apri': if (!capo) return; return this.eventoMondo({ tipo: 'voto', domanda: m.domanda, opzioni: m.opzioni });
         case 'voto': return this.vota(io, Number(m.scelta));
@@ -630,11 +696,13 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
 
   async accetta(ws, id, membri, extra = {}) {
     ws.serializeAttachment({ membro: id, vede: membri[id]?.ruolo === 'master' || !!membri[id]?.admin });
+    const sess = (await this.get('campagna'))?.sessione || 1; // una presenza per ogni sessione a cui partecipa: sblocca le cornici
+    if (membri[id].sessioneVista !== sess) { membri[id].presenze = (membri[id].presenze || 0) + 1; membri[id].sessioneVista = sess; await this.put('membri', membri); }
     this.invia(ws, { t: 'benvenuto', io: id, ...extra, stato: await this.statoCompleto(id) });
     const visto = membri[id].visto || membri[id].dal || 0, persi = (await this.get('riepiloghi', [])).filter(r => r.t > visto);
     if (persi.length && visto) this.invia(ws, { t: 'bentornato', riepiloghi: persi.slice(-3) });
     membri[id].visto = Date.now(); await this.put('membri', membri);
-    this.tutti({ t: 'presenza', online: this.online(), entrato: id, membro: { nome: membri[id].nome, ruolo: membri[id].ruolo, colore: membri[id].colore, admin: !!membri[id].admin } });
+    this.tutti({ t: 'presenza', online: this.online(), entrato: id, membro: { nome: membri[id].nome, ruolo: membri[id].ruolo, colore: membri[id].colore, admin: !!membri[id].admin, presenze: membri[id].presenze || 0 } });
   }
 
   async nuovoMembro(membri, nome, ruolo, admin) {
@@ -650,7 +718,8 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     const campagna = {
       nome: testo(m.nome, 60) || 'Nuova campagna', regole: m.regole === '3.5' ? '3.5' : '5e',
       ambientazione: testo(m.ambientazione, 400) || 'Fantasy classico', masterTipo: m.masterTipo === 'umano' ? 'umano' : 'ai',
-      invito: codiceCasuale(8), creata: Date.now(), sessione: 1, solitaria: !!m.solitaria, prova: !!m.prova
+      invito: codiceCasuale(8), creata: Date.now(), sessione: 1, solitaria: !!m.solitaria, prova: !!m.prova,
+      sfida: m.sfida?.titolo ? { titolo: testo(m.sfida.titolo, 80), obiettivo: testo(m.sfida.obiettivo, 400), settimana: testo(m.sfida.settimana, 12) } : undefined
     };
     await this.put('campagna', campagna);
     if (AVVENTURE[m.avventura]) await this.put('avventura', { id: m.avventura, scena: 0, iniziata: false });
@@ -693,7 +762,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
       if (m.ambientazione) c.ambientazione = testo(m.ambientazione, 400);
       if (m.nome) c.nome = testo(m.nome, 60);
       if (m.masterTipo) c.masterTipo = m.masterTipo === 'umano' ? 'umano' : 'ai';
-      if (m.nuovaSessione) { c.sessione = (c.sessione || 1) + 1; c.invito = codiceCasuale(8); await this.diario('sistema', `Inizia la sessione ${c.sessione}.`); this.ctx.waitUntil(this.evolviMondo(false)); await this.minacceCrescono(); }
+      if (m.nuovaSessione) { c.sessione = (c.sessione || 1) + 1; c.invito = codiceCasuale(8); await this.diario('sistema', `Inizia la sessione ${c.sessione}.`); this.ctx.waitUntil(this.evolviMondo(false)); await this.minacceCrescono(); for (const x of this.online()) if (membri[x] && membri[x].sessioneVista !== c.sessione) { membri[x].presenze = (membri[x].presenze || 0) + 1; membri[x].sessioneVista = c.sessione; } await this.put('membri', membri); }
       if (m.ruoli && me.admin) for (const [id, r] of Object.entries(m.ruoli)) if (membri[id] && ['giocatore', 'spettatore', 'master'].includes(r)) membri[id].ruolo = r;
       await this.put('campagna', c); await this.put('membri', membri);
     }
@@ -816,6 +885,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     if (nuovo) { const cal = (await this.get('mondo', {}))?.calendario || {}; this.ctx.waitUntil(this.illustra(`${SCENE_EN[luogo.tipo] || SCENE_EN.aperto}, called "${luogo.nome}"${cal.ora !== undefined ? `, at ${cal.ora}:00` : ''}${cal.meteo ? `, weather: ${cal.meteo}` : ''}${cal.stagione ? `, season: ${cal.stagione}` : ''}`, luogo.nome, true)); }
     this.tutti({ t: 'luogo', luogo, segnalini: seg, luoghi: await this.get('luoghi', {}) });
     this.tutti({ t: 'diario', ev });
+    this.tutti({ t: 'note_mappa', luogo: id, note: await this.get('note:' + id, []) });
     if (precedente !== id && !luogo.genitore) await this.forseMercante(luogo);
   }
 
@@ -1056,7 +1126,8 @@ Eventi possibili (solo se accadono davvero):
 Ora e meteo cambiano la partita: di notte i PNG dormono, le botteghe sono chiuse, le guardie sospettose e i mostri più numerosi; con pioggia, nebbia o neve la vista è ridotta (svantaggio alle prove di Percezione basate sulla vista), le tracce si perdono e i viaggi sono più lenti; col temporale i fuochi si spengono e i rumori coprono i passi. Dillo nella narrazione quando conta.
 Il mondo è vivo (vedi "mondo_vivo"): fai tornare la nemesi nei momenti giusti, ricordati delle scelte morali (il finale della campagna dipende da loro), fai crescere le minacce ignorate (livello 1-5: a 5 colpiscono), metti missioni sulla bacheca quando il gruppo è in città, aiuta in segreto ogni personaggio verso il suo obiettivo segreto e ogni tanto manda un sogno privato con un indizio. Se c'è un enigma aperto aspetta la risposta dei giocatori: non dire la soluzione. Se c'è un voto aperto aspetta il risultato. La casa del gruppo e i compagni animali esistono: usali nella storia.
 {"tipo":"valuta","nome":"Corone di Argentea","cambio":0.5} (valuta locale e quanto vale in monete d'oro) e {"tipo":"valuta_pg","pg":"<id>","valuta":"...","quantita":n}
-Durante il combattimento rispetta l'ordine di iniziativa e gioca tu i turni dei nemici quando tocca a loro.${c.solitaria ? `
+Durante il combattimento rispetta l'ordine di iniziativa e gioca tu i turni dei nemici quando tocca a loro.${c.sfida && !c.sfida.esito ? `
+SFIDA DELLA SETTIMANA "${c.sfida.titolo}": ${c.sfida.obiettivo} È un'avventura breve per una serata: prepara subito la scena, tieni il ritmo alto e sii giusto. Quando il giocatore completa l'obiettivo usa {"tipo":"sfida_vinta"}; se il personaggio muore o la sfida non è più possibile usa {"tipo":"sfida_persa"}.` : ''}${c.solitaria ? `
 PARTITA IN SOLITARIA: c'è un solo giocatore. Interpreti anche i suoi compagni alleati (${COMPAGNI.map(x => x.nome + ': ' + x.carattere).join('; ')}): falli parlare con la loro personalità, agire e combattere nel loro turno (descrivi le azioni e usa danno_nemico per i loro colpi), senza rubare la scena al giocatore. Dai qualche suggerimento in più su cosa si può fare e rispondi sempre subito.` : ''}${avv ? `
 AVVENTURA PRONTA "${AVVENTURE[avv.id].titolo}": seguila (trovi scene, segreti e scena attuale in "avventura"), ma lascia libertà ai giocatori e adattala alle loro scelte. Quando il gruppo arriva alla scena successiva usa {"tipo":"avventura","scena":"<id della scena>"}: l'app li porta nel luogo e mette i nemici della scena; poi tu decidi se e quando inizia il combattimento.` : ''}`;
     const contesto = {
@@ -1126,6 +1197,7 @@ AVVENTURA PRONTA "${AVVENTURE[avv.id].titolo}": seguila (trovi scene, segreti e 
       case 'avventura': return this.scenaAvventura(e.scena);
       case 'negozio': if (e.chiudi) { await this.put('negozio', null); return this.tutti({ t: 'negozio', negozio: null }); } return this.apriNegozio(e);
       case 'suono': if (SUONI.includes(e.nome)) this.tutti({ t: 'suono', nome: e.nome }); return;
+      case 'sfida_vinta': case 'sfida_persa': { const c = await this.get('campagna'); if (!c.sfida || c.sfida.esito) return; c.sfida.esito = e.tipo === 'sfida_vinta' ? 'vinta' : 'persa'; await this.put('campagna', c); await this.annuncia(c.sfida.esito === 'vinta' ? `Sfida della settimana vinta: ${c.sfida.titolo}!` : `Sfida della settimana persa: ${c.sfida.titolo}. Riprova la prossima volta!`); return this.tutti({ t: 'sfida', sfida: c.sfida }); }
       case 'missione': case 'missione_fatta': case 'voto': case 'enigma': case 'nemesi': case 'nemesi_fuga': case 'scelta': case 'sogno': case 'segreto_fatto': case 'minaccia': case 'minaccia_sventata': case 'reputazione_luogo': case 'compagno': return this.eventoMondo(e);
       case 'png_nota': { const png = await this.get('png', {}), n = testo(e.nome, 40); if (!n || !e.nota) return; png[n] = { ...png[n], luogo: png[n]?.luogo || null, t: png[n]?.t || Date.now(), note: [...(png[n]?.note || []), testo(e.nota, 120)].slice(-6) }; await this.put('png', png); return this.tutti({ t: 'png', png }); }
       case 'morte': return this.caduto(String(e.pg || ''), testo(e.motivo, 200));
@@ -1306,7 +1378,7 @@ export const COMPAGNI = [
 // Avventure pronte (testi originali)
 export const AVVENTURE = {
   miniera: {
-    titolo: 'La miniera dei goblin',
+    titolo: 'La miniera dei goblin', livelli: '1-3', tipo: 'avventura',
     sinossi: 'Da una settimana la miniera di Pietrarossa è caduta in mano ai goblin del capo Rugnak: i minatori sono fuggiti, uno di loro (Brann, un nano) è prigioniero e il villaggio rischia la fame. La sindaca Gerlinda offre una ricompensa a chi libera la miniera. Avventura per personaggi di livello 1-3, da giocare in una serata.',
     fazioni: [{ nome: 'Goblin di Rugnak', reputazione: -60, descrizione: 'banda di goblin guidata dall\'hobgoblin Rugnak, occupa la miniera di Pietrarossa' }, { nome: 'Villaggio di Pietrarossa', reputazione: 10, descrizione: 'minatori e contadini, spaventati ma ospitali' }],
     segreti: ['Rugnak non è il vero capo: prende ordini da un bugbear, Grumsh, che vuole usare la miniera come covo per razziare la valle.', 'Brann ha scoperto una vena d\'argento: per questo i goblin lo tengono vivo e lo fanno scavare.', 'Il vecchio Ulrico, il fabbro del villaggio, vende di nascosto chiodi e lanterne ai goblin in cambio di argento: se scoperto, chiede di non dirlo alla sindaca.', 'Nel bosco i goblin hanno lasciato un carretto rovesciato con le loro tracce: porta dritto all\'ingresso secondario della miniera, che evita le trappole.'],
@@ -1326,6 +1398,70 @@ export const AVVENTURE = {
         incontro: [{ nome: 'Rugnak l\'hobgoblin', numero: 1, gs: '1/2', pf: 22, ca: 18 }, { nome: 'Grumsh il bugbear', numero: 1, gs: '1', pf: 27, ca: 16 }],
         tesoro: '150 monete d\'oro, 2 pozioni di guarigione, il martello di Brann (arma +1), un sacco di argento grezzo (200 mo)',
         leggi: 'La galleria si apre in una caverna enorme. Sulle pareti, una lunga vena scintillante riflette la luce di un braciere: argento, tanto argento. Davanti al braciere, un hobgoblin con un elmo troppo grande sbraita ordini. Ma è l\'ombra alle sue spalle a farvi gelare il sangue: qualcosa di grosso, peloso, che si alza lentamente impugnando una mazza chiodata.' }
+    ]
+  },
+  torre: {
+    titolo: 'L\'ombra della Torre di Corvonero', livelli: '2-4', tipo: 'seguito', seguito: 'miniera',
+    sinossi: 'Seguito de "La miniera dei goblin". Tra le cose di Grumsh il gruppo trova una lettera col sigillo di un corvo nero: qualcuno pagava i goblin per raccogliere argento. Serve alla negromante Morvane, che nelle rovine della Torre di Corvonero forgia una corona d\'argento per comandare i morti della valle. Pietrarossa festeggia i suoi eroi, ma i cani ululano ogni notte e al cimitero mancano tre bare. Per personaggi di livello 2-4, una o due serate.',
+    fazioni: [{ nome: 'Seguaci del Corvo', reputazione: -50, descrizione: 'fedeli della negromante Morvane, rubano argento e cadaveri' }, { nome: 'Villaggio di Pietrarossa', reputazione: 30, descrizione: 'grati al gruppo per aver liberato la miniera' }, { nome: 'Pattuglia del Passo', reputazione: 0, descrizione: 'soldati del barone che sorvegliano la strada del passo, sospettosi ma onesti' }],
+    segreti: ['Morvane era la guaritrice di Pietrarossa trent\'anni fa: durante una pestilenza il villaggio la accusò di stregoneria e la cacciò. Vuole vendetta, non un regno: può fermarsi se il villaggio ammette la colpa.', 'Il capitano della pattuglia, Edrik, è nipote di Morvane e le porta provviste di nascosto: non è malvagio, ha paura per lei.', 'La corona non è finita: manca l\'argento di Pietrarossa. Se il gruppo l\'ha lasciato al villaggio, i seguaci provano a rubarlo durante la festa.', 'Nella cripta, il sarcofago del fondatore custodisce una spada lunga +1 che brilla vicino ai non morti.', 'La porta d\'argento della cripta si apre solo a chi pronuncia la parola "perdono".'],
+    ricompensa: '100 monete d\'oro a testa dal barone, la spada del fondatore, 450 PX a personaggio. Se Morvane viene redenta, torna a Pietrarossa come guaritrice e diventa un\'alleata del gruppo.',
+    scene: [
+      { id: 'festa', luogo: 'Piazza di Pietrarossa', tipo: 'villaggio', obiettivo: 'Festa per gli eroi della miniera. A notte fonda due seguaci del Corvo provano a rubare l\'argento; inseguendoli il gruppo trova la pista verso il passo.', png: 'Gerlinda la sindaca (fiera del gruppo); Brann il nano (ora amico, brinda troppo); Tobia l\'oste', indizi: 'una piuma nera, terra di cimitero sugli stivali dei ladri, uno grida "la Signora del Corvo vi farà marcire"',
+        incontro: [{ nome: 'Seguace del Corvo', numero: 2, gs: '1/8', pf: 11, ca: 12 }],
+        leggi: 'Pietrarossa non ha mai fatto una festa così. Lanterne di carta pendono tra le case, Tobia ha portato in piazza tre botti intere e Brann racconta per la decima volta come lo avete liberato, ogni volta con più goblin. A mezzanotte la musica si spegne, le lanterne si spengono una ad una... e dal magazzino dove è chiuso l\'argento arriva un rumore di vetri rotti.' },
+      { id: 'passo', luogo: 'Passo dei Corvi', tipo: 'aperto', obiettivo: 'Sulla strada la Pattuglia del Passo ferma il gruppo: il capitano Edrik sconsiglia di salire alla torre. Al tramonto, un agguato di scheletri.', png: 'Capitano Edrik (cortese, nervoso, porta un anello col corvo); soldati annoiati', indizi: 'i soldati raccontano che Edrik porta un carro alla torre ogni settimana "per ordine del barone"',
+        incontro: [{ nome: 'Scheletro', numero: 3, gs: '1/4', pf: 13, ca: 13 }],
+        leggi: 'La strada del passo sale tra rocce nere e pini storti. Uno stormo di corvi vi segue da lontano, posandosi sempre un po\' più avanti, come se vi aspettasse. Dietro una curva, una barriera di legno e tre soldati con le lance. Il più giovane, un capitano dai capelli rossi, alza la mano: "Fermi. Lassù non c\'è niente per voi. Tornate indietro, finché c\'è luce."' },
+      { id: 'rovine', luogo: 'Rovine di Corvonero', tipo: 'castello', obiettivo: 'Il cortile della torre in rovina: zombi tra le macerie, corvi messaggeri. Bisogna trovare l\'ingresso della cripta, nascosto sotto la statua del fondatore.', png: 'Pip, lo spirito di un garzone di stalla (innocuo, curioso, indica l\'ingresso a chi è gentile)', indizi: 'il diario bruciacchiato di Morvane racconta della pestilenza e della cacciata dal villaggio',
+        incontro: [{ nome: 'Zombi', numero: 3, gs: '1/4', pf: 22, ca: 8 }],
+        leggi: 'Della Torre di Corvonero resta in piedi solo il fusto, nero come un dito puntato verso il cielo. Il cortile è un labirinto di mura crollate e d\'erba alta. Al centro, la statua di un cavaliere senza testa regge una spada spezzata. Dietro di voi, qualcosa si trascina tra le macerie, lentamente, con un rumore di ossa che strusciano sulla pietra.' },
+      { id: 'cripta', luogo: 'Cripta del Fondatore', tipo: 'dungeon', obiettivo: 'Corridoio con lame nascoste (Percezione CD 13 per vederle), il sarcofago con la spada del fondatore, la porta d\'argento e due ghoul di guardia.', png: 'nessuno: iscrizioni sulle pareti', indizi: 'sulla porta d\'argento: "Solo chi chiede perdono passa" (è un enigma: la parola è perdono)',
+        incontro: [{ nome: 'Ghoul', numero: 2, gs: '1', pf: 22, ca: 12 }],
+        leggi: 'Gli scalini scendono a spirale nel buio, consumati da secoli di passi. L\'aria è fredda e sa di terra bagnata e di incenso vecchio. In fondo a un lungo corridoio, una porta d\'argento brilla debolmente, coperta di lettere antiche. E tra voi e la porta, due sagome magre e grigie si voltano insieme, annusando l\'aria.' },
+      { id: 'cima', luogo: 'Cima della Torre di Corvonero', tipo: 'castello', obiettivo: 'Sotto la luna Morvane completa la corona. Scontro finale, oppure redenzione se il gruppo le porta le scuse del villaggio o la convince della verità.', png: 'Morvane la negromante (amara, stanca, ancora capace di pietà); Edrik se è venuto con il gruppo', indizi: 'se il gruppo porta le scuse di Pietrarossa (o Gerlinda in persona) Morvane spezza la corona',
+        incontro: [{ nome: 'Morvane la negromante', numero: 1, gs: '2', pf: 40, ca: 12 }, { nome: 'Scheletro', numero: 2, gs: '1/4', pf: 13, ca: 13 }],
+        tesoro: '120 monete d\'oro, 2 pergamene di Cura ferite, l\'anello del corvo (una volta al giorno parla con un corvo), la corona d\'argento incompiuta (300 mo di argento)',
+        leggi: 'In cima alla torre il vento ulula tra i merli spezzati. Al centro di un cerchio di candele nere, una donna con i capelli grigi lavora a un\'incudine: martella una corona d\'argento che brilla di luce fredda. Intorno a lei, ossa che si muovono da sole. Non alza nemmeno lo sguardo: "Vi hanno mandato loro, vero? Come mandarono gli altri, trent\'anni fa."' }
+    ]
+  },
+  lanterna: {
+    titolo: 'La notte della lanterna', livelli: '1-2', tipo: 'one-shot',
+    sinossi: 'Avventura breve per una serata. In una notte di tempesta il gruppo cerca riparo a Villa Ombrosa, una casa di campagna dove una lanterna resta sempre accesa alla finestra. La vedova Isotta li accoglie volentieri, ma a mezzanotte la casa si sveglia: porte che sbattono, ritratti che piangono e una bambina che chiede di trovare sua madre.',
+    fazioni: [],
+    segreti: ['La bambina, Lucia, è un fantasma: morì cinquant\'anni fa nell\'incendio della serra e cerca il carillon di sua madre.', 'Isotta non è la padrona ma la vecchia governante: tiene accesa la lanterna per senso di colpa, perché fu lei a lasciarne una nella serra la notte dell\'incendio.', 'Se il carillon suona nella stanza di Lucia, la bambina trova pace e la casa smette di essere infestata.', 'In cantina un\'ombra nata dal rancore dei vecchi servi tiene chiusa la stanza di Lucia.'],
+    ricompensa: '40 monete d\'oro a testa da Isotta, la lanterna che non si spegne mai (luce anche sotto la pioggia, senza olio), 150 PX a personaggio.',
+    scene: [
+      { id: 'arrivo', luogo: 'Villa Ombrosa', tipo: 'interno', obiettivo: 'Tempesta, accoglienza e cena con Isotta, che dà una sola regola: non spegnere mai la lanterna.', png: 'Isotta (gentile, malinconica, evita di parlare della serra)', indizi: 'il ritratto di una donna con una bambina e un carillon in mano; la porta della serra sbarrata con assi',
+        leggi: 'La pioggia vi frusta la faccia da ore quando, oltre gli alberi, compare una luce: una lanterna dietro una finestra. Villa Ombrosa è una grande casa di pietra con le persiane scrostate. Ad aprirvi è una vecchia signora con uno scialle nero: "Entrate, entrate, c\'è zuppa calda per tutti. Solo una cosa vi chiedo: quella lanterna non si spegne. Mai."' },
+      { id: 'mezzanotte', luogo: 'Corridoi di Villa Ombrosa', tipo: 'interno', obiettivo: 'A mezzanotte la casa si sveglia: spade appese ai muri volano contro il gruppo. Appare Lucia e chiede del carillon della mamma.', png: 'Lucia, la bambina fantasma (dolce, triste, scompare quando ha paura)', indizi: 'nel camino della biblioteca c\'è la chiave della serra',
+        incontro: [{ nome: 'Spada volante', numero: 2, gs: '1/4', pf: 17, ca: 17 }],
+        leggi: 'Vi sveglia il silenzio: la pioggia si è fermata di colpo. Poi, da qualche parte al piano di sotto, il rintocco di un orologio. Dodici colpi. Le porte delle stanze si spalancano tutte insieme e lungo il corridoio i ritratti hanno gli occhi bagnati di lacrime. In fondo, una bambina in camicia da notte vi guarda: "Avete visto la mia mamma? Ha il mio carillon."' },
+      { id: 'serra', luogo: 'Serra bruciata', tipo: 'aperto', obiettivo: 'Tra le rovine annerite della serra bisogna trovare il carillon. Se messa alle strette, Isotta confessa.', png: 'Isotta, se il gruppo la porta con sé', indizi: 'il carillon è sotto il vaso grande, intatto; le ceneri formano impronte di piedi piccoli',
+        incontro: [{ nome: 'Ratto gigante', numero: 3, gs: '1/8', pf: 7, ca: 12 }],
+        leggi: 'La serra è uno scheletro di ferro e vetri rotti. Le piante sono diventate carbone, ma l\'odore di fumo, dopo cinquant\'anni, è ancora lì. Tra le ceneri qualcosa squittisce. E per un attimo, alla luce della lanterna, vedete sulla cenere impronte di piedi nudi, piccoli, che girano in tondo intorno a un grande vaso.' },
+      { id: 'cantina', luogo: 'Cantina di Villa Ombrosa', tipo: 'dungeon', obiettivo: 'L\'ombra dei servi blocca la porta della stanza di Lucia. Dopo lo scontro, far suonare il carillon libera la bambina e la casa.', png: 'Lucia; l\'Ombra (sussurra rancore, odia la luce)', indizi: 'la luce della lanterna indebolisce l\'Ombra',
+        incontro: [{ nome: 'Ombra', numero: 1, gs: '1/2', pf: 16, ca: 12 }],
+        tesoro: 'il cofanetto dei gioielli della famiglia (80 mo), la lanterna che non si spegne mai',
+        leggi: 'Le scale della cantina sono umide e scivolose. In fondo, una porta dipinta di rosa, con un nome scritto in lettere infantili: LUCIA. Davanti alla porta il buio è più fitto, come se fosse fatto di qualcosa. E si muove. Una sagoma senza volto si stacca dal muro, e la fiamma della lanterna trema.' }
+    ]
+  },
+  ponte: {
+    titolo: 'Il pedaggio dell\'ogre', livelli: '2-3', tipo: 'one-shot',
+    sinossi: 'Avventura breve per una serata, che si può risolvere anche senza combattere. Sul Ponte Vecchio sul fiume Brunello un ogre di nome Brodo pretende un pedaggio da tutti: una pecora a carro. I mercanti di Borgo Guado sono disperati e la fiera d\'autunno è tra tre giorni. Ma Brodo è lì perché qualcuno gli ha rubato qualcosa.',
+    fazioni: [{ nome: 'Mercanti di Borgo Guado', reputazione: 10, descrizione: 'mercanti e barcaioli, disperati per il ponte bloccato' }, { nome: 'Banda del Luccio', reputazione: -30, descrizione: 'banditi del fiume che vivono nel canneto' }],
+    segreti: ['Brodo è un ogre giovane e poco sveglio: i banditi della Banda del Luccio gli hanno rubato la sua capra Bisa e gli hanno detto che l\'hanno mangiata i mercanti.', 'Il capobanda, Luccio, usa il pedaggio come distrazione: mentre tutti guardano il ponte, fa passare la sua merce di contrabbando sull\'altra riva.', 'Bisa è viva, legata nel covo dei banditi nel canneto.', 'Se Brodo riavrà Bisa diventa amico del gruppo e li aiuta contro i banditi.'],
+    ricompensa: '30 monete d\'oro a testa dai mercanti (60 se Brodo resta vivo e il ponte torna libero), una barca a remi, 200 PX a personaggio; Brodo come amico, che una volta può sollevare o spaccare qualsiasi cosa per loro.',
+    scene: [
+      { id: 'borgo', luogo: 'Borgo Guado', tipo: 'villaggio', obiettivo: 'I mercanti raccontano dell\'ogre e chiedono aiuto. Qualcuno nota che i banditi del canneto sono stranamente ricchi ultimamente.', png: 'Marta la locandiera (schietta, ride forte); mastro Ugo il mercante (avaro, vuole l\'ogre morto)', indizi: 'i banditi pagano da bere con monete nuove; il pedaggio è cominciato il giorno dopo che una capra è sparita dal pascolo del vecchio Tommaso',
+        leggi: 'Borgo Guado vive del ponte: carri, barche, mercanti che gridano i prezzi. Ma oggi la piazza è piena di carri fermi e di gente che litiga. Una locandiera grande e grossa vi viene incontro asciugandosi le mani sul grembiule: "Forestieri armati! Finalmente. C\'è un ogre sul ponte che si mangia le nostre pecore, e tra tre giorni c\'è la fiera."' },
+      { id: 'ponteVecchio', luogo: 'Ponte Vecchio', tipo: 'aperto', obiettivo: 'Incontro con Brodo: trattativa, inganno o combattimento. Se il gruppo lo ascolta, scopre della capra rubata.', png: 'Brodo l\'ogre (lento, triste, ripete "Bisa... voi mangiato Bisa!")', indizi: 'Brodo ha una corda da capra legata al polso; sull\'altra riva si vedono barche che passano mentre lui è distratto',
+        incontro: [{ nome: 'Brodo l\'ogre', numero: 1, gs: '2', pf: 59, ca: 11 }],
+        leggi: 'Il Ponte Vecchio è di pietra, stretto e alto sull\'acqua che corre veloce. A metà, seduto di traverso come su una panca, c\'è un ogre. Ha in mano una clava grande come un albero e davanti un mucchio di ossa di pecora. Quando vi vede si alza, e il ponte trema: "Pagare! Una pecora! O... o Brodo arrabbia!" Ma ha gli occhi rossi, come se avesse pianto.' },
+      { id: 'canneto', luogo: 'Covo nel canneto', tipo: 'foresta', obiettivo: 'Trovare il covo della Banda del Luccio, liberare Bisa e sconfiggere Luccio e i suoi. Brodo può aiutare se è diventato amico.', png: 'Luccio il capobanda (sbruffone, codardo quando perde); Bisa la capra (testarda, bela fortissimo)', indizi: 'le casse del contrabbando portano il marchio di un mercante di Borgo Guado: mastro Ugo era d\'accordo con i banditi',
+        incontro: [{ nome: 'Bandito', numero: 3, gs: '1/8', pf: 11, ca: 12 }, { nome: 'Luccio il capobanda', numero: 1, gs: '1', pf: 32, ca: 15 }],
+        tesoro: '90 monete d\'oro di contrabbando, 2 pozioni di guarigione, una mappa del fiume con i nascondigli dei banditi',
+        leggi: 'Il canneto è alto più di un uomo e l\'acqua vi arriva alle caviglie. Seguendo le impronte arrivate a una radura: capanne su palafitte, barche cariche di casse e un falò. Intorno al fuoco, uomini che ridono e contano monete. E legata a un palo, una capra bianca che bela disperata.' }
     ]
   }
 };
@@ -1417,6 +1553,13 @@ export async function generaImmagine(env, prompt, piccola) {
       if (dati) return Uint8Array.from(atob(dati), c => c.charCodeAt(0));
     } catch (e) { errore = e; }
   }
+  // riserva 3: Pollinations, gratuito e senza chiave (FLUX), quando tutte le quote del giorno sono finite
+  try {
+    const lato = piccola ? 512 : 1024, q = encodeURIComponent(((piccola ? '' : stile) + prompt).slice(0, 900));
+    const r = await fetch(`https://image.pollinations.ai/prompt/${q}?width=${lato}&height=${piccola ? 512 : 576}&nologo=true&model=flux&seed=${Math.floor(Math.random() * 1e6)}`, { signal: AbortSignal.timeout(60000) });
+    if (r.ok && /^image\//.test(r.headers.get('content-type') || '')) return new Uint8Array(await r.arrayBuffer());
+    errori.push(`pollinations ${r.status}`);
+  } catch (e) { errori.push('pollinations ' + String(e.message || e).slice(0, 60)); }
   if (errori.length) throw new Error(errori.join(' | '));
   return null;
 }
