@@ -1553,13 +1553,6 @@ export async function generaImmagine(env, prompt, piccola) {
       if (dati) return Uint8Array.from(atob(dati), c => c.charCodeAt(0));
     } catch (e) { errore = e; }
   }
-  // riserva 3: Pollinations, gratuito e senza chiave (FLUX), quando tutte le quote del giorno sono finite
-  try {
-    const lato = piccola ? 512 : 1024, q = encodeURIComponent(((piccola ? '' : stile) + prompt).slice(0, 900));
-    const r = await fetch(`https://image.pollinations.ai/prompt/${q}?width=${lato}&height=${piccola ? 512 : 576}&nologo=true&model=flux&seed=${Math.floor(Math.random() * 1e6)}`, { signal: AbortSignal.timeout(60000) });
-    if (r.ok && /^image\//.test(r.headers.get('content-type') || '')) return new Uint8Array(await r.arrayBuffer());
-    errori.push(`pollinations ${r.status}`);
-  } catch (e) { errori.push('pollinations ' + String(e.message || e).slice(0, 60)); }
   if (errori.length) throw new Error(errori.join(' | '));
   return null;
 }
