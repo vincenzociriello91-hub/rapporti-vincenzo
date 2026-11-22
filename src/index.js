@@ -18,6 +18,9 @@ export default {
     if (req.method === 'GET' && url.pathname === '/prova-assistente') return provaAssistente(env);
     const md = url.pathname.match(/^\/tavolo\/([A-Za-z0-9]{6,12})\/media\/(voce|img)\/[a-z0-9]{4,30}$/);
     if (req.method === 'GET' && md) return env.TAVOLO.get(env.TAVOLO.idFromName(md[1].toUpperCase())).fetch(req);
+    // grafica comprata (privata): solo per chi è membro della campagna
+    const gr = url.pathname.match(/^\/tavolo\/([A-Za-z0-9]{6,12})\/grafica\/atlante\.(png|json)$/);
+    if (req.method === 'GET' && gr) return env.TAVOLO.get(env.TAVOLO.idFromName(gr[1].toUpperCase())).fetch(req);
     const t = url.pathname.match(/^\/tavolo\/([A-Za-z0-9]{6,12})\/ws$/);
     if (req.method === 'GET' && t) return apriTavolo(req, env, t[1]);
     if (req.method === 'GET' && url.pathname === '/turn') return turn(req, env);

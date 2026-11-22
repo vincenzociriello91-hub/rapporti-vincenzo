@@ -29,6 +29,8 @@ export class Tavolo extends DurableObject {
       if (!dati) return new Response('non pronto', { status: 404, headers: { 'Access-Control-Allow-Origin': '*' } });
       return new Response(dati, { headers: { 'Content-Type': md[1] === 'voce' ? 'audio/wav' : 'image/jpeg', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'public, max-age=31536000, immutable' } });
     }
+    const gr = new URL(req.url).pathname.match(/\/grafica\/atlante\.(png|json)$/);
+    if (req.method === 'GET' && gr) return this.grafica(req, gr[1]);
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
     this.ctx.acceptWebSocket(server);
@@ -37,6 +39,22 @@ export class Tavolo extends DurableObject {
   }
 
   // ---------- voce naturale del master (Gemini TTS): una sola sintesi per narrazione, tenuta in memoria per chi la scarica ----------
+  // Atlante dei pacchetti grafici comprati: sta nel repository privato dei rapporti, non in quelli pubblici;
+  // si consegna solo a un membro della campagna (id e chiave del membro) e resta nella cache di Cloudflare.
+  async grafica(req, est) {
+    const u = new URL(req.url), cors = { 'Access-Control-Allow-Origin': '*' };
+    const me = (await this.get('membri', {}))[u.searchParams.get('m') || ''];
+    if (!me || me.hash !== await sha(u.searchParams.get('k') || '')) return new Response('non autorizzato', { status: 403, headers: cors });
+    const chiave = new Request('https://grafica.tavolo.interna/atlante.' + est), cache = caches.default;
+    let r = await cache.match(chiave);
+    if (!r) {
+      const g = await fetch('https://api.github.com/repos/vincenzociriello91-hub/TavoloAvventura-rapporti/contents/grafica/atlante.' + est, { headers: { Authorization: `Bearer ${this.env.GITHUB_TOKEN}`, Accept: 'application/vnd.github.raw', 'User-Agent': 'tavolo-worker' } });
+      if (!g.ok) return new Response('grafica non disponibile', { status: 502, headers: cors });
+      r = new Response(await g.arrayBuffer(), { headers: { 'Content-Type': est === 'png' ? 'image/png' : 'application/json', 'Cache-Control': 'public, max-age=86400' } });
+      await cache.put(chiave, r.clone());
+    }
+    return new Response(r.body, { headers: { ...cors, 'Content-Type': r.headers.get('Content-Type'), 'Cache-Control': 'private, max-age=86400' } });
+  }
   async voce(id, testoV, png) {
     try {
       const wav = await sintesiVocale(this.env, testoV, png);
@@ -1191,7 +1209,15 @@ export async function generaImmagine(env, prompt, piccola) {
     try { const r = await env.AI.run('@cf/black-forest-labs/flux-1-schnell', { prompt: piccola ? prompt : stile + prompt, steps: piccola ? 4 : 6 }); if (r?.image) return Uint8Array.from(atob(r.image), c => c.charCodeAt(0)); }
     catch (e) { errore = e; } // es. 4006: finiti i 10.000 neuroni gratuiti del giorno (condivisi con le altre app)
   }
-  // riserva: i modelli immagine di Gemini, con la sua quota separata
+  // riserva 1: Hugging Face (chiave HF_TOKEN, crediti gratuiti del mese), come in KindredNest
+  if (env.HF_TOKEN) {
+    try {
+      const r = await fetch('https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell', { method: 'POST', headers: { Authorization: `Bearer ${env.HF_TOKEN}`, 'Content-Type': 'application/json', Accept: 'image/jpeg' }, body: JSON.stringify({ inputs: (piccola ? '' : stile) + prompt, parameters: { num_inference_steps: 4, width: piccola ? 512 : 768, height: piccola ? 512 : 768 } }), signal: AbortSignal.timeout(60000) });
+      if (r.ok && /^image\//.test(r.headers.get('content-type') || '')) return new Uint8Array(await r.arrayBuffer());
+      errore = new Error('Hugging Face ' + r.status + ' ' + (await r.text()).slice(0, 120));
+    } catch (e) { errore = e; }
+  }
+  // riserva 2: i modelli immagine di Gemini, con la sua quota separata
   for (const modello of env.GEMINI_KEY ? ['gemini-2.5-flash-image', 'gemini-3.1-flash-image'] : []) {
     try {
       const r = await fetch(`${env.GEMINI_BASE || 'https://generativelanguage.googleapis.com'}/v1beta/models/${modello}:generateContent?key=${encodeURIComponent(env.GEMINI_KEY)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ parts: [{ text: (piccola ? '' : stile) + prompt + (piccola ? '' : ' Square image.') }] }], generationConfig: { responseModalities: ['IMAGE'] } }), signal: AbortSignal.timeout(60000) });
