@@ -489,8 +489,9 @@ export class Tavolo extends DurableObject {
     const istr = `Sei il Dungeon Master di una partita di Dungeons & Dragons giocata online da amici italiani. Parli in italiano, con voce narrante coinvolgente ma concisa: le tue parole vengono lette ad alta voce.
 Regolamento: ${regole}. Applicalo correttamente (prove, CD, tiri salvezza, attacchi, danni). Ambientazione scelta: ${c.ambientazione}.
 Tieni conto dell'aspetto dei personaggi (altezza, peso, corporatura) quando conta davvero: passaggi stretti, essere notati, sollevare o spingere.
-Ruolo: descrivi scene, interpreta i PNG (dai loro un nome e un modo di parlare riconoscibile), chiedi i tiri di dado quando servono con abilità e CD, applica le conseguenze, mantieni il mondo coerente con la memoria della campagna. Sii proattivo: i PNG agiscono e il mondo va avanti anche senza i giocatori.
-Se il gruppo non è ancora in nessun luogo, fai partire l'avventura con un evento "luogo".
+Ruolo: descrivi scene, interpreta i PNG (dai loro un nome e un modo di parlare riconoscibile; chi è già in png_incontrati tiene sempre lo stesso nome, e il campo "png" è il nome con cui lo presenti nel testo), chiedi i tiri di dado quando servono con abilità e CD, applica le conseguenze, mantieni il mondo coerente con la memoria della campagna. Sii proattivo: i PNG agiscono e il mondo va avanti anche senza i giocatori.
+Se il gruppo non è ancora in nessun luogo, fai partire l'avventura con un evento "luogo". Evita gli inizi scontati (taverna sotto la pioggia, locandiere nano, incarico da un vecchio misterioso): parti nel mezzo di una situazione originale legata all'ambientazione e alla stagione.
+Varia il linguaggio: non ripetere immagini, aggettivi o battute già presenti in ultimi_eventi.
 Se i giocatori stanno solo parlando tra loro fuori dal gioco o non serve il tuo intervento, rispondi con narrazione vuota "".
 Quando un giocatore ha appena tirato un dado che avevi chiesto, risolvi l'esito.
 Mai più di 110 parole di narrazione. Niente elenchi, niente markdown.
@@ -526,6 +527,7 @@ Durante il combattimento rispetta l'ordine di iniziativa e gioca tu i turni dei 
       fazioni_e_reputazione: (await this.get('mondo', {}))?.fazioni || {},
       valute_locali: (await this.get('mondo', {}))?.valute || {},
       relazioni_tra_personaggi: await this.get('relazioni', {}),
+      png_incontrati: Object.entries(await this.get('png', {})).map(([nome, p]) => ({ nome, luogo: p.luogo })),
       ultimi_eventi: diario.map(d => `[${d.tipo}] ${d.testo}`)
     };
     const r = await this.g({
@@ -539,6 +541,13 @@ Durante il combattimento rispetta l'ordine di iniziativa e gioca tu i turni dei 
     if (!out) return;
     const narr = testo(out.narrazione, 1500).trim();
     for (const e of (Array.isArray(out.eventi) ? out.eventi.slice(0, 12) : [])) { try { await this.applicaEvento(e); } catch {} }
+    const nomePng = testo(out.png, 40).trim();
+    if (narr && nomePng) { // memoria dei PNG: lo stesso personaggio non cambia nome tra un turno e l'altro
+      const png = await this.get('png', {});
+      png[nomePng] = { luogo: luogo?.nome || png[nomePng]?.luogo || null, t: Date.now() };
+      const nomi = Object.keys(png).sort((a, b) => png[b].t - png[a].t).slice(0, 40); // shortcut: solo gli ultimi 40, la memoria lunga li riassume
+      await this.put('png', Object.fromEntries(nomi.map(n => [n, png[n]])));
+    }
     if (narr) {
       const ev = await this.diario('narrazione', narr, 'master');
       this.tutti({ t: 'narra', testo: ev.testo, png: testo(out.png, 40), chi: 'master', modello: r.modello });
@@ -685,6 +694,8 @@ async function chiamaGemini(env, corpo, leggero) {
     const url = `${env.GEMINI_BASE || 'https://generativelanguage.googleapis.com'}/v1beta/models/${encodeURIComponent(modello)}:generateContent?key=${encodeURIComponent(env.GEMINI_KEY)}`;
     const invia = c => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(c) });
     r = await invia({ ...corpo, generationConfig: { ...corpo.generationConfig, thinkingConfig: { thinkingBudget: 0 } } });
+    // Gemini 3 non accetta thinkingBudget 0: si prova il ragionamento minimo prima di quello pieno (lento, ~24 s per turno)
+    if (r.status === 400) r = await invia({ ...corpo, generationConfig: { ...corpo.generationConfig, thinkingConfig: { thinkingLevel: 'minimal' } } });
     if (r.status === 400) r = await invia(corpo);
     if (![404, 429, 500, 503].includes(r.status)) { r.modello = modello; return r; }
   }
