@@ -777,7 +777,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
         for (const k of ['totale', 'sessione']) { c[k].chiamate++; c[k].in += u.promptTokenCount || 0; c[k].out += (u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0); }
         c.modelli[r.modello] = (c.modelli[r.modello] || 0) + 1;
         c.compiti[compito] = (c.compiti[compito] || 0) + 1;
-        c.ultimo = { t: Date.now(), modello: r.modello, compito };
+        c.ultimo = { t: Date.now(), modello: r.modello, compito, tentativi: r.tentativi }; // tempi di ogni tentativo, per capire perché il master è lento
         await this.put('costi', c);
         const membri = await this.get('membri', {});
         this.tutti({ t: 'costi', costi: c }, x => membri[x]?.ruolo === 'master' || membri[x]?.admin);
