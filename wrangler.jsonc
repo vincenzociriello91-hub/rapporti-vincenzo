@@ -3,5 +3,8 @@
   "main": "src/index.js",
   "compatibility_date": "2026-11-01",
   "workers_dev": true,
-  "vars": { "OWNER": "vincenzociriello91-hub", "APP_CONSENTITE": "AssistenteBanco,DriveHub,TVPilot" }
+  "vars": { "OWNER": "vincenzociriello91-hub", "APP_CONSENTITE": "AssistenteBanco,DriveHub,TVPilot,TavoloAvventura" },
+  // Stanze di gioco di Tavolo d'Avventura: una per campagna, con stato persistente (SQLite, piano gratuito)
+  "durable_objects": { "bindings": [{ "name": "TAVOLO", "class_name": "Tavolo" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Tavolo"] }]
 }

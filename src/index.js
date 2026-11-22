@@ -5,6 +5,8 @@
 const CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'POST, GET, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' };
 const risposta = (stato, corpo) => new Response(JSON.stringify(corpo), { status: stato, headers: { ...CORS, 'Content-Type': 'application/json' } });
 const MAX = 1024 * 1024; // 1 MB per invio
+import { Tavolo, apriTavolo } from './tavolo.js';
+export { Tavolo }; // stanze di gioco di Tavolo d'Avventura (Durable Object)
 
 export default {
   async fetch(req, env) {
@@ -14,6 +16,8 @@ export default {
     if (req.method === 'POST' && url.pathname === '/chiedi') return chiedi(req, env);
     if (req.method === 'POST' && url.pathname === '/gemini') return gemini(req, env);
     if (req.method === 'GET' && url.pathname === '/prova-assistente') return provaAssistente(env);
+    const t = url.pathname.match(/^\/tavolo\/([A-Za-z0-9]{6,12})\/ws$/);
+    if (req.method === 'GET' && t) return apriTavolo(req, env, t[1]);
     const m = url.pathname.match(/^\/r\/([A-Za-z0-9_-]{2,40})$/);
     if (req.method !== 'POST' || !m) return risposta(404, { errore: 'percorso' });
     if (!env.GITHUB_TOKEN) return risposta(500, { errore: 'GITHUB_TOKEN mancante' });
