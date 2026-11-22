@@ -67,6 +67,7 @@ export class Tavolo extends DurableObject {
       membri: membriPubblici, online: this.online(), pg,
       luoghi: luoghiIdx, luogo: attuale ? await this.get('luogo:' + attuale) : null,
       segnalini, diario: diario.slice(-120), dadi: dadi.filter(d => !d.segreto || vedeSegreti || d.chi === perMembro).slice(-40),
+      mondo: await this.get('mondo', { fazioni: {}, valute: {}, viaggi: [], notizie: [] }), relazioni: await this.get('relazioni', {}),
       combattimento: await this.get('combattimento', null), aree: await this.get('aree', []), gruppo: await this.get('gruppo', { oro: 0, oggetti: [] }),
       memoria: vedeSegreti ? memoria : undefined, suggerimenti: vedeSegreti ? suggerimenti.slice(-30) : undefined,
       costi: vedeSegreti ? await this.get('costi', null) : undefined
@@ -110,6 +111,20 @@ export class Tavolo extends DurableObject {
         case 'combattimento': return this.combattimento(io, me, capo, m);
         case 'area': return this.area(io, capo, m);
         case 'gruppo': return this.gruppo(io, me, m);
+        case 'relazione': {
+          const rel = await this.get('relazioni', {}); const LIV = ['sconosciuti', 'conoscenti', 'amici', 'amici stretti', 'compagni di vita', 'famiglia', 'rivali'];
+          if (!membri[m.con] || m.con === io || !LIV.includes(m.livello)) return;
+          rel[io] = { ...(rel[io] || {}), [m.con]: m.livello }; await this.put('relazioni', rel);
+          this.tutti({ t: 'relazioni', relazioni: rel }); return;
+        }
+        case 'mondo_evolvi': if (!capo) return; return this.evolviMondo(true);
+        case 'mondo': {
+          if (!capo) return;
+          const mo = await this.get('mondo', { fazioni: {}, valute: {}, viaggi: [], notizie: [] });
+          if (m.fazione) { const f = testo(m.fazione, 40); if (m.rimuovi) delete mo.fazioni[f]; else mo.fazioni[f] = { reputazione: Math.max(-100, Math.min(100, Number(m.reputazione) || 0)), descrizione: testo(m.descrizione, 200) || mo.fazioni[f]?.descrizione || '' }; }
+          if (m.valuta) { const v = testo(m.valuta, 40); if (m.rimuovi) delete mo.valute[v]; else mo.valute[v] = { cambio: Math.max(0.001, Number(m.cambio) || 1) }; }
+          await this.put('mondo', mo); this.tutti({ t: 'mondo', mondo: mo }); return;
+        }
         case 'esci': case 'rimuovi': {
           const chi = m.t === 'rimuovi' && me.admin ? String(m.membro || '') : io;
           if (!membri[chi] || (chi !== io && membri[chi].admin)) return;
@@ -196,7 +211,7 @@ export class Tavolo extends DurableObject {
       if (m.ambientazione) c.ambientazione = testo(m.ambientazione, 400);
       if (m.nome) c.nome = testo(m.nome, 60);
       if (m.masterTipo) c.masterTipo = m.masterTipo === 'umano' ? 'umano' : 'ai';
-      if (m.nuovaSessione) { c.sessione = (c.sessione || 1) + 1; c.invito = codiceCasuale(8); await this.diario('sistema', `Inizia la sessione ${c.sessione}.`); }
+      if (m.nuovaSessione) { c.sessione = (c.sessione || 1) + 1; c.invito = codiceCasuale(8); await this.diario('sistema', `Inizia la sessione ${c.sessione}.`); this.ctx.waitUntil(this.evolviMondo(false)); }
       if (m.ruoli && me.admin) for (const [id, r] of Object.entries(m.ruoli)) if (membri[id] && ['giocatore', 'spettatore', 'master'].includes(r)) membri[id].ruolo = r;
       await this.put('campagna', c); await this.put('membri', membri);
     }
@@ -277,6 +292,8 @@ export class Tavolo extends DurableObject {
       await this.put('luoghi', idx);
     }
     luogo.visite = (luogo.visite || 0) + 1; luogo.ultima = Date.now();
+    const precedente = await this.get('luogoAttuale');
+    if (precedente !== id) { const mo = await this.get('mondo', { fazioni: {}, valute: {}, viaggi: [], notizie: [] }); mo.viaggi = [...(mo.viaggi || []), { da: precedente || null, a: id, t: Date.now(), sessione: c.sessione || 1 }].slice(-300); await this.put('mondo', mo); this.tutti({ t: 'mondo', mondo: mo }); }
     await this.put('luogo:' + id, luogo);
     await this.put('luogoAttuale', id);
     const membri = await this.get('membri', {});
@@ -470,6 +487,8 @@ Eventi possibili (solo se accadono davvero):
 {"tipo":"combattimento","azione":"inizia|prossimo|fine"} (inizia quando scoppia uno scontro: l'app tira l'iniziativa e gestisce i turni; "prossimo" quando un PNG o nemico ha finito il suo turno; "fine" quando lo scontro è finito)
 {"tipo":"danno_nemico","nemico":"<id del segnalino>","quantita":n}
 {"tipo":"bottino","oro":n,"oggetti":["..."]} (va nel tesoro comune del gruppo)
+{"tipo":"fazione","nome":"Gilda dei Ladri","descrizione":"..."} (nuova fazione) e {"tipo":"reputazione","fazione":"...","delta":n,"motivo":"..."} (da -100 a +100: i PNG delle fazioni trattano il gruppo di conseguenza)
+{"tipo":"valuta","nome":"Corone di Argentea","cambio":0.5} (valuta locale e quanto vale in monete d'oro) e {"tipo":"valuta_pg","pg":"<id>","valuta":"...","quantita":n}
 Durante il combattimento rispetta l'ordine di iniziativa e gioca tu i turni dei nemici quando tocca a loro.`;
     const contesto = {
       memoria_campagna: memoria || '(inizio della campagna)',
@@ -479,6 +498,9 @@ Durante il combattimento rispetta l'ordine di iniziativa e gioca tu i turni dei 
       nemici_sulla_mappa: Object.entries(await this.get('segnalini', {})).filter(([, s2]) => s2.tipo === 'nemico').map(([id, s2]) => ({ id, nome: s2.nome, x: s2.x, y: s2.y, pf: s2.pf, ca: s2.ca })),
       combattimento: await this.get('combattimento', null),
       tesoro_del_gruppo: await this.get('gruppo', null),
+      fazioni_e_reputazione: (await this.get('mondo', {}))?.fazioni || {},
+      valute_locali: (await this.get('mondo', {}))?.valute || {},
+      relazioni_tra_personaggi: await this.get('relazioni', {}),
       ultimi_eventi: diario.map(d => `[${d.tipo}] ${d.testo}`)
     };
     const r = await this.g({
@@ -517,6 +539,16 @@ Durante il combattimento rispetta l'ordine di iniziativa e gioca tu i turni dei 
       case 'luogo': return this.vai('master', { nome: 'Master' }, e.nome, e.tipoLuogo);
       case 'edificio': return this.modificaLuogo('master', {}, true, { edificio: e.edificio, stato: e.stato });
       case 'tiro': { const p = await this.get('pg:' + e.pg); this.tutti({ t: 'richiesta_tiro', pg: e.pg, prova: testo(e.prova, 40), cd: e.cd | 0, nome: p?.nome }); return; }
+      case 'reputazione': case 'fazione': {
+        const mo = await this.get('mondo', { fazioni: {}, valute: {}, viaggi: [], notizie: [] }); const f = testo(e.fazione || e.nome, 40); if (!f) return;
+        const prima = mo.fazioni[f]?.reputazione || 0;
+        mo.fazioni[f] = { reputazione: Math.max(-100, Math.min(100, prima + (Number(e.delta) || 0))), descrizione: testo(e.descrizione, 200) || mo.fazioni[f]?.descrizione || '' };
+        await this.put('mondo', mo); this.tutti({ t: 'mondo', mondo: mo });
+        if (e.delta) { const ev = await this.diario('mondo', `Reputazione con ${f}: ${e.delta > 0 ? '+' : ''}${e.delta}${e.motivo ? ' (' + testo(e.motivo, 80) + ')' : ''}.`, 'master'); this.tutti({ t: 'diario', ev }); }
+        return;
+      }
+      case 'valuta': { const mo = await this.get('mondo', { fazioni: {}, valute: {}, viaggi: [], notizie: [] }); const v = testo(e.nome, 40); if (!v) return; mo.valute[v] = { cambio: Math.max(0.001, Number(e.cambio) || 1) }; await this.put('mondo', mo); this.tutti({ t: 'mondo', mondo: mo }); return; }
+      case 'valuta_pg': return pgMod(e.pg, p => { p.valute = { ...(p.valute || {}), [testo(e.valuta, 40)]: Math.max(0, (p.valute?.[e.valuta] || 0) + (Number(e.quantita) || 0)) }; }, `${Number(e.quantita) >= 0 ? 'ottiene' : 'spende'} ${Math.abs(Number(e.quantita) || 0)} ${testo(e.valuta, 40)}`);
       case 'combattimento': return this.combattimento('master', { nome: 'Master' }, true, { azione: ['inizia', 'prossimo', 'fine'].includes(e.azione) ? e.azione : 'inizia' });
       case 'bottino': { if (e.oro) await this.gruppo('master', { nome: 'Il master' }, { op: 'oro', delta: Number(e.oro) || 0 }); for (const o of (Array.isArray(e.oggetti) ? e.oggetti.slice(0, 6) : [])) await this.gruppo('master', { nome: 'Il master' }, { op: 'oggetto', nome: String(o), qta: 1 }); return; }
       case 'danno_nemico': {
@@ -526,6 +558,30 @@ Durante il combattimento rispetta l'ordine di iniziativa e gioca tu i turni dei 
         await this.put('segnalini', seg); this.tutti({ t: 'segnalini', segnalini: seg }); return;
       }
       case 'nemico': return this.segnalino('master', true, { id: 'n_' + testo(e.nome, 20).replace(/\W+/g, '_') + '_' + (e.x | 0) + '_' + (e.y | 0), x: e.x, y: e.y, nome: e.nome, colore: '#d84b3c', tipo: 'nemico', pf: Number(e.pf) || undefined, ca: Number(e.ca) || undefined });
+    }
+  }
+
+  // Tra una sessione e l'altra il mondo va avanti: ricostruzioni, notizie, fazioni
+  async evolviMondo(manuale) {
+    const c = await this.get('campagna'); if (c.masterTipo !== 'ai' && !manuale) return;
+    const [memoria, idx, mo] = await Promise.all([this.get('memoria', ''), this.get('luoghi', {}), this.get('mondo', { fazioni: {}, valute: {}, viaggi: [], notizie: [] })]);
+    const luoghi = [];
+    for (const id of Object.keys(idx).slice(-15)) { const l = await this.get('luogo:' + id); if (l) luoghi.push({ id, nome: l.nome, edifici: l.edifici.map(e => ({ id: e.id, nome: e.nome, stato: e.stato })) }); }
+    if (!luoghi.length && !memoria) return;
+    const r = await this.g({ contents: [{ parts: [{ text: `Sei il master di una campagna di D&D (${c.ambientazione}). Tra una sessione e l'altra il mondo va avanti da solo. In base a memoria, luoghi e fazioni decidi cosa è cambiato: edifici ricostruiti o danneggiati, chi governa, nuove voci, reputazione delle fazioni. Sii coerente e moderato (2-5 cambiamenti).
+Memoria: ${memoria || '(poca)'}
+Luoghi: ${JSON.stringify(luoghi)}
+Fazioni: ${JSON.stringify(mo.fazioni)}
+Rispondi SOLO JSON: {"notizie":"testo di massimo 80 parole da leggere ad alta voce, come un banditore","edifici":[{"luogo":"<id>","edificio":"<id>","stato":"integro|danneggiato|bruciato|distrutto"}],"fazioni":[{"nome":"...","delta":n}]}` }] }], generationConfig: { temperature: 0.7, responseMimeType: 'application/json' } }, 'mondo');
+    if (!r.ok) return;
+    const out = leggiJSON((await r.json()).candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '');
+    if (!out) return;
+    for (const e of (out.edifici || []).slice(0, 6)) await this.modificaLuogo('master', {}, true, { luogo: e.luogo, edificio: e.edificio, stato: e.stato });
+    for (const f of (out.fazioni || []).slice(0, 4)) await this.applicaEvento({ tipo: 'reputazione', fazione: f.nome, delta: f.delta, motivo: 'tra una sessione e l\'altra' });
+    if (out.notizie) {
+      const m2 = await this.get('mondo', mo); m2.notizie = [...(m2.notizie || []), { t: Date.now(), sessione: c.sessione, testo: testo(out.notizie, 800) }].slice(-30); await this.put('mondo', m2); this.tutti({ t: 'mondo', mondo: m2 });
+      const ev = await this.diario('narrazione', 'Notizie dal mondo: ' + out.notizie, 'master');
+      this.tutti({ t: 'narra', testo: ev.testo, png: 'Il banditore', chi: 'master' });
     }
   }
 
