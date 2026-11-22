@@ -23,11 +23,96 @@ const COLORI = ['#e8b04b', '#5b8fd9', '#c97bd0', '#6cc08a', '#e2735f', '#4fc3c8'
 export class Tavolo extends DurableObject {
   async fetch(req) {
     if (req.method === 'POST' && req.headers.get('x-tavolo-interno') === '1') return this.interno(await req.json());
+    const md = new URL(req.url).pathname.match(/\/media\/(voce|img)\/([a-z0-9]{4,30})$/);
+    if (req.method === 'GET' && md) {
+      const dati = md[1] === 'voce' ? this.voci?.get(md[2]) : await this.ctx.storage.get('img:' + md[2]);
+      if (!dati) return new Response('non pronto', { status: 404, headers: { 'Access-Control-Allow-Origin': '*' } });
+      return new Response(dati, { headers: { 'Content-Type': md[1] === 'voce' ? 'audio/wav' : 'image/jpeg', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'public, max-age=31536000, immutable' } });
+    }
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
     this.ctx.acceptWebSocket(server);
     server.serializeAttachment({ membro: null });
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  // ---------- voce naturale del master (Gemini TTS): una sola sintesi per narrazione, tenuta in memoria per chi la scarica ----------
+  async voce(id, testoV, png) {
+    try {
+      const wav = await sintesiVocale(this.env, testoV, png);
+      if (!wav) return this.tutti({ t: 'voce', id, ok: false });
+      this.voci = this.voci || new Map();
+      this.voci.set(id, wav);
+      while (this.voci.size > 8) this.voci.delete(this.voci.keys().next().value);
+      this.tutti({ t: 'voce', id, ok: true });
+    } catch { this.tutti({ t: 'voce', id, ok: false }); }
+  }
+
+  // ---------- illustrazioni realistiche delle scene (Workers AI, quota gratuita giornaliera) ----------
+  async illustra(prompt, didascalia, forza) {
+    try {
+      const oggi = new Date().toISOString().slice(0, 10), q = await this.get('quotaImmagini', { giorno: oggi, n: 0, ultima: 0 });
+      if (q.giorno !== oggi) { q.giorno = oggi; q.n = 0; }
+      if (q.n >= 40 || (!forza && Date.now() - q.ultima < 120000)) return; // al massimo 40 al giorno, una ogni 2 minuti
+      q.n++; q.ultima = Date.now(); await this.put('quotaImmagini', q);
+      const jpeg = await generaImmagine(this.env, prompt);
+      if (!jpeg) return;
+      const id = 'i' + Date.now().toString(36);
+      await this.ctx.storage.put('img:' + id, jpeg);
+      const elenco = await this.get('immagini', []);
+      const luogo = await this.get('luogoAttuale');
+      elenco.push({ id, t: Date.now(), didascalia: testo(didascalia, 200), luogo });
+      while (elenco.length > 60) { const vecchia = elenco.shift(); await this.ctx.storage.delete('img:' + vecchia.id); }
+      await this.put('immagini', elenco);
+      const d = await this.get('diario', []);
+      d.push({ t: Date.now(), tipo: 'illustrazione', testo: testo(didascalia, 200), chi: 'master', img: id });
+      while (d.length > 400) d.shift();
+      await this.put('diario', d);
+      this.tutti({ t: 'diario', ev: d[d.length - 1] });
+      return id;
+    } catch {}
+  }
+  // ---------- riepilogo illustrato di fine sessione ----------
+  async riepilogo() {
+    const [c, diario, memoria] = await Promise.all([this.get('campagna'), this.get('diario', []), this.get('memoria', '')]);
+    const inizio = [...diario].reverse().find(d => d.tipo === 'sistema' && /^Inizia la sessione/.test(d.testo))?.t || c.creata;
+    const ev = diario.filter(d => d.t >= inizio);
+    const tutte = (re, tipi) => ev.filter(d => (!tipi || tipi.includes(d.tipo)) && re.test(d.testo));
+    const px = {}; for (const d of tutte(/guadagna (\d+) punti esperienza/, ['scheda'])) { const [nome] = d.testo.split(':'); px[nome] = (px[nome] || 0) + Number(d.testo.match(/guadagna (\d+) punti/)[1]); }
+    const stats = {
+      sessione: c.sessione || 1,
+      nemici: tutte(/è sconfitto/, ['combattimento']).map(d => d.testo.replace(/ è sconfitto\.?$/, '')),
+      combattimenti: tutte(/^Inizia il combattimento/, ['combattimento']).length,
+      luoghi: [...new Set(ev.filter(d => d.tipo === 'luogo').map(d => d.testo.replace(/^.*?: /, '').replace(/\.$/, '')))],
+      bottino: ev.filter(d => (d.tipo === 'gruppo' || d.tipo === 'scheda') && /ottiene|monete d'oro|tesoro|aggiunge/.test(d.testo) && !/spende/.test(d.testo)).map(d => d.testo).slice(-12),
+      livelli: tutte(/livello/i, ['scheda']).map(d => d.testo).slice(-8),
+      px
+    };
+    const r = await this.g({ contents: [{ parts: [{ text: `Sei il master di una campagna di D&D (${c.ambientazione}). Racconta la serata di gioco appena finita come una pagina di cronaca epica, in italiano, massimo 170 parole, piacevole da leggere ad alta voce e da condividere nel gruppo. Poi dai un titolo all'episodio e scrivi in inglese il prompt (max 60 parole, niente nomi) per un'illustrazione realistica del momento più memorabile.
+Rispondi SOLO JSON: {"titolo":"...","racconto":"...","prompt":"..."}
+Memoria della campagna: ${memoria || '(nessuna)'}
+Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('\n')}` }] }], generationConfig: { temperature: 0.8, responseMimeType: 'application/json' } }, 'master');
+    if (!r.ok) return this.tutti({ t: 'errore', msg: 'Riepilogo non disponibile ora' });
+    const out = leggiJSON((await r.json()).candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '') || {};
+    const rie = { t: Date.now(), titolo: testo(out.titolo, 100) || `Sessione ${stats.sessione}`, racconto: testo(out.racconto, 1800), stats, img: null };
+    rie.img = out.prompt ? await this.illustra(testo(out.prompt, 600), rie.titolo, true) : null;
+    const elenco = await this.get('riepiloghi', []); elenco.push(rie); await this.put('riepiloghi', elenco.slice(-30));
+    const d = await this.get('diario', []); d.push({ t: rie.t, tipo: 'riepilogo', testo: rie.titolo, chi: 'master', riepilogo: rie.t }); while (d.length > 400) d.shift(); await this.put('diario', d);
+    this.tutti({ t: 'riepilogo', r: rie });
+    this.tutti({ t: 'diario', ev: d[d.length - 1] });
+    if (rie.racconto) this.tutti({ t: 'narra', testo: rie.racconto, chi: 'master', riassunto: true });
+  }
+
+  // prompt inglese per la scena attuale, dalle ultime narrazioni
+  async illustraScena(forza) {
+    const diario = await this.get('diario', []), luogo = await this.get('luogo:' + await this.get('luogoAttuale'));
+    const recenti = diario.filter(d => d.tipo === 'narrazione').slice(-3).map(d => d.testo).join('\n');
+    if (!recenti && !luogo) return;
+    const r = await this.g({ contents: [{ parts: [{ text: `Write ONE English prompt (max 60 words) for a realistic image generator, describing the current scene of a D&D game: setting, lighting, mood, characters seen from a cinematic angle. No names, no text in the image. Place: ${luogo?.nome || ''} (${luogo?.tipo || ''}). Recent narration (Italian):\n${recenti}\nThen on a second line write an Italian caption of max 12 words. Format: PROMPT: ...\nDIDASCALIA: ...` }] }], generationConfig: { temperature: 0.6 } }, 'interni');
+    if (!r.ok) return;
+    const t = (await r.json()).candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '';
+    const prompt = t.match(/PROMPT:\s*(.+)/i)?.[1], did = t.match(/DIDASCALIA:\s*(.+)/i)?.[1];
+    if (prompt) await this.illustra(prompt, did || luogo?.nome || 'La scena', forza);
   }
 
   // ---------- connettore per Claude: lettura dello stato e preparazione delle sessioni ----------
@@ -54,6 +139,7 @@ export class Tavolo extends DurableObject {
   membroDi(ws) { return ws.deserializeAttachment()?.membro || null; }
   invia(ws, obj) { try { ws.send(JSON.stringify(obj)); } catch {} }
   tutti(obj, filtro) {
+    if (obj.t === 'narra' && obj.testo && this.env.GEMINI_KEY && !obj.voce) { obj.voce = 'v' + Date.now().toString(36) + Math.floor(Math.random() * 1e4); this.ctx.waitUntil(this.voce(obj.voce, obj.testo, obj.png)); }
     const s = JSON.stringify(obj);
     for (const ws of this.ctx.getWebSockets()) {
       const m = this.membroDi(ws);
@@ -114,6 +200,9 @@ export class Tavolo extends DurableObject {
         case 'segnalino': return this.segnalino(io, capo, m);
         case 'vai': if (!capo && (await this.get('campagna')).masterTipo === 'umano') return; return this.vai(io, me, m.nome, m.tipo);
         case 'scena': return this.scena(io, me.ruolo === 'master', m);
+        case 'riepilogo': if (!capo) return; this.ctx.waitUntil(this.riepilogo()); return this.invia(ws, { t: 'avviso', msg: 'Il master prepara il riepilogo della serata…' });
+        case 'riepiloghi': return this.invia(ws, { t: 'riepiloghi', elenco: await this.get('riepiloghi', []) });
+        case 'illustra': if (!capo) return; this.ctx.waitUntil(this.illustraScena(true)); return this.invia(ws, { t: 'avviso', msg: 'Sto disegnando la scena…' });
         case 'modifica_luogo': return this.modificaLuogo(io, me, me.ruolo === 'master', m); // solo il master umano; il master AI cambia lo stato con gli eventi
         case 'chat': { const ev = await this.diario('chat', m.testo, io); this.tutti({ t: 'diario', ev }); if (m.alMaster) await this.programmaMaster(true); return; }
         case 'parlato': return this.parlato(io, me, m);
@@ -326,10 +415,15 @@ export class Tavolo extends DurableObject {
       const pg = await this.get('pg:' + mid);
       seg[mid] = { x: Math.min(W - 1, luogo.ingresso.x + (k % 2)), y: Math.min(H - 1, luogo.ingresso.y + Math.floor(k / 2)), nome: pg?.nome || mm.nome, colore: mm.colore, tipo: 'pg' }; k++;
     }
+    // chi abita il luogo: l'oste dietro il bancone, il padrone di casa negli interni
+    const banco = luogo.edifici.find(e => e.id === 'bancone');
+    if (banco) seg.p_oste = { x: banco.x + 4, y: Math.max(1, banco.y - 1), nome: luogo.png || 'Oste', tipo: 'png', colore: '#bfae86' };
+    else if (luogo.png && luogo.tipo === 'interno') { const cx = Math.floor(W / 2), cy = Math.floor(H / 2); for (let r = 0; r < 6 && !seg.p_casa; r++) for (let dy = -r; dy <= r && !seg.p_casa; dy++) for (let dx = -r; dx <= r; dx++) { const x = cx + dx, y = cy + dy; if (luogo.celle[y]?.[x] === '=' && !(luogo.oggetti || []).some(o => o.x === x && o.y === y)) { seg.p_casa = { x, y, nome: luogo.png, tipo: 'png', colore: '#bfae86' }; break; } } }
     await this.put('segnalini', seg);
     await this.put('aree', []);
     await this.scopri(Object.values(seg), luogo);
     const ev = await this.diario('luogo', `${nuovo ? 'Il gruppo raggiunge per la prima volta' : 'Il gruppo torna a'}: ${luogo.nome}.`, io);
+    if (nuovo) { const cal = (await this.get('mondo', {}))?.calendario || {}; this.ctx.waitUntil(this.illustra(`${SCENE_EN[luogo.tipo] || SCENE_EN.aperto}, called "${luogo.nome}"${cal.ora !== undefined ? `, at ${cal.ora}:00` : ''}${cal.meteo ? `, weather: ${cal.meteo}` : ''}${cal.stagione ? `, season: ${cal.stagione}` : ''}`, luogo.nome, true)); }
     this.tutti({ t: 'luogo', luogo, segnalini: seg, luoghi: await this.get('luoghi', {}) });
     this.tutti({ t: 'diario', ev });
   }
@@ -536,10 +630,12 @@ Eventi possibili (solo se accadono davvero):
 {"tipo":"luogo","nome":"nome proprio del luogo dove si spostano","tipoLuogo":"citta|villaggio|taverna|dungeon|foresta|grotta|castello|porto|aperto"}
 {"tipo":"edificio","edificio":"<id edificio del luogo attuale>","stato":"bruciato|distrutto|danneggiato|integro"}
 {"tipo":"scena","azione":"sposta|rompi|brucia|togli|aggiungi","oggetto":"<id oggetto di scena>","tipoOggetto":"botte|cassa|tavolo|...","nome":"...","x":n,"y":n} (oggetti visibili sulla mappa: usalo quando un oggetto viene spostato, rotto, bruciato, preso o compare; per "aggiungi" servono tipoOggetto, x, y)
+{"tipo":"illustra","prompt":"English description of the scene for a realistic image, max 60 words, no names","didascalia":"didascalia italiana breve"} (solo nei momenti davvero memorabili: un mostro che appare, un colpo di scena, un luogo spettacolare; al massimo una volta ogni tanto)
 {"tipo":"tiro","pg":"<id>","prova":"Percezione","cd":15}
 {"tipo":"nemico","nome":"Goblin","x":n,"y":n,"pf":7,"ca":15} (segnalino sulla mappa, griglia ${W}x${H})
 {"tipo":"combattimento","azione":"inizia|prossimo|fine"} (inizia quando scoppia uno scontro: l'app tira l'iniziativa e gestisce i turni; "prossimo" quando un PNG o nemico ha finito il suo turno; "fine" quando lo scontro è finito)
 {"tipo":"danno_nemico","nemico":"<id del segnalino>","quantita":n}
+{"tipo":"png","nome":"Oste Bruno","x":n,"y":n} (mette sulla mappa un personaggio non giocante che è in scena; con "via":true lo toglie quando se ne va)
 {"tipo":"bottino","oro":n,"oggetti":["..."]} (va nel tesoro comune del gruppo)
 {"tipo":"fazione","nome":"Gilda dei Ladri","descrizione":"..."} (nuova fazione) e {"tipo":"reputazione","fazione":"...","delta":n,"motivo":"..."} (da -100 a +100: i PNG delle fazioni trattano il gruppo di conseguenza)
 {"tipo":"tempo","giorni":n,"ora":0-23,"stagione":"primavera|estate|autunno|inverno","meteo":"sereno|nuvoloso|pioggia|temporale|neve|nebbia"} (quando passa il tempo o cambia il tempo atmosferico: la mappa mostra luce del giorno, notte, ombre del sole, pioggia, neve e nebbia; tieni coerenti ora e meteo con la narrazione)
@@ -604,6 +700,7 @@ Durante il combattimento rispetta l'ordine di iniziativa e gioca tu i turni dei 
       case 'luogo': return this.vai('master', { nome: 'Master' }, e.nome, e.tipoLuogo);
       case 'edificio': return this.modificaLuogo('master', {}, true, { edificio: e.edificio, stato: e.stato });
       case 'scena': return this.scena('master', true, { azione: e.azione, oggetto: e.oggetto, tipo: e.oggetto_tipo || e.tipoOggetto, nome: e.nome, x: e.x, y: e.y });
+      case 'illustra': this.ctx.waitUntil(e.prompt ? this.illustra(testo(e.prompt, 600), testo(e.didascalia, 200)) : this.illustraScena()); return;
       case 'tiro': { const p = await this.get('pg:' + e.pg); this.tutti({ t: 'richiesta_tiro', pg: e.pg, prova: testo(e.prova, 40), cd: e.cd | 0, nome: p?.nome }); return; }
       case 'reputazione': case 'fazione': {
         const mo = await this.get('mondo', { fazioni: {}, valute: {}, viaggi: [], notizie: [] }); const f = testo(e.fazione || e.nome, 40); if (!f) return;
@@ -624,6 +721,7 @@ Durante il combattimento rispetta l'ordine di iniziativa e gioca tu i turni dei 
         if (s2.pf <= 0) { delete seg[e.nemico]; const c = await this.get('combattimento'); if (c?.attivo) await this.combattimento('master', {}, true, { azione: 'togli', id: e.nemico }); const ev = await this.diario('combattimento', `${s2.nome} è sconfitto.`, 'master'); this.tutti({ t: 'diario', ev }); }
         await this.put('segnalini', seg); this.tutti({ t: 'segnalini', segnalini: seg }); return;
       }
+      case 'png': return e.via ? this.segnalino('master', true, { id: 'p_' + testo(e.nome, 20).replace(/\W+/g, '_'), rimuovi: true }) : this.segnalino('master', true, { id: 'p_' + testo(e.nome, 20).replace(/\W+/g, '_'), x: e.x, y: e.y, nome: testo(e.nome, 40), colore: '#bfae86', tipo: 'png' });
       case 'nemico': return this.segnalino('master', true, { id: 'n_' + testo(e.nome, 20).replace(/\W+/g, '_') + '_' + (e.x | 0) + '_' + (e.y | 0), x: e.x, y: e.y, nome: e.nome, colore: '#d84b3c', tipo: 'nemico', pf: Number(e.pf) || undefined, ca: Number(e.ca) || undefined });
     }
   }
@@ -732,6 +830,43 @@ async function chiamaGemini(env, corpo, leggero) {
     if (![404, 429, 500, 503].includes(r.status)) { r.modello = modello; return r; }
   }
   return r;
+}
+// Voce naturale: Gemini TTS (modelli più nuovi prima). Il PCM a 24 kHz diventa WAV a 16 kHz (più leggero da scaricare).
+const VOCI_PNG = ['Algenib', 'Fenrir', 'Puck', 'Kore', 'Leda', 'Orus', 'Aoede', 'Enceladus', 'Gacrux', 'Umbriel', 'Zephyr', 'Iapetus'];
+export async function sintesiVocale(env, testoV, png) {
+  if (!env.GEMINI_KEY) return null;
+  const h = [...String(png || '')].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 7);
+  const voceNome = png ? VOCI_PNG[h % VOCI_PNG.length] : (env.VOCE_NARRATORE || 'Charon');
+  const stile = png ? `Recita in italiano dando voce a ${png}, con il tono adatto al personaggio:` : 'Leggi in italiano come il narratore di un\'avventura fantasy, con voce calda, espressiva e coinvolgente:';
+  const corpo = { contents: [{ parts: [{ text: `${stile}\n${testo(testoV, 1500)}` }] }], generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voceNome } } } } };
+  for (const modello of [...new Set([env.GEMINI_TTS, 'gemini-3.8-flash-lite-tts', 'gemini-3.8-flash-tts', 'gemini-3.1-flash-tts-preview', 'gemini-2.5-flash-preview-tts'].filter(Boolean))]) {
+    const r = await fetch(`${env.GEMINI_BASE || 'https://generativelanguage.googleapis.com'}/v1beta/models/${modello}:generateContent?key=${encodeURIComponent(env.GEMINI_KEY)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(corpo) });
+    if (!r.ok) { if ([400, 404, 429, 500, 503].includes(r.status)) continue; return null; }
+    const parte = (await r.json()).candidates?.[0]?.content?.parts?.find(p => p.inlineData?.data);
+    if (!parte) continue;
+    const rate = Number(parte.inlineData.mimeType?.match(/rate=(\d+)/)?.[1]) || 24000;
+    const bin = Uint8Array.from(atob(parte.inlineData.data), c => c.charCodeAt(0));
+    return wav16k(new Int16Array(bin.buffer, 0, bin.length >> 1), rate);
+  }
+  return null;
+}
+export function wav16k(pcm, rate) {
+  const fuori = 16000, n = Math.floor(pcm.length * fuori / rate), dati = new Int16Array(n);
+  for (let i = 0; i < n; i++) { const x = i * rate / fuori, k = Math.floor(x), f = x - k; dati[i] = (pcm[k] || 0) * (1 - f) + (pcm[k + 1] ?? pcm[k] ?? 0) * f; }
+  const buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf), scrivi = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+  scrivi(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); scrivi(8, 'WAVE'); scrivi(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, fuori, true); v.setUint32(28, fuori * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); scrivi(36, 'data'); v.setUint32(40, n * 2, true);
+  new Int16Array(buf, 44).set(dati);
+  return buf;
+}
+// Illustrazioni: FLUX.1 schnell su Workers AI (quota gratuita di Cloudflare). IMG_FINTA nelle prove.
+const SCENE_EN = { citta: 'a bustling medieval fantasy city with stone houses, cobblestone streets and market stalls', villaggio: 'a small medieval fantasy village with thatched cottages and dirt roads', porto: 'a medieval fantasy harbor with wooden docks, ships and warehouses', taverna: 'the cozy interior of a medieval fantasy tavern with a roaring fireplace, wooden tables and patrons', dungeon: 'a dark ancient dungeon with stone corridors lit by flickering torches', grotta: 'a vast natural cave with stalagmites, glowing mushrooms and underground pools', castello: 'a mighty medieval castle with towers, banners and a courtyard', foresta: 'a dense ancient forest with towering trees, mist and a winding path', interno: 'the interior of a medieval fantasy building with furniture and candlelight', aperto: 'open medieval fantasy countryside with rolling hills and a dirt road' };
+export async function generaImmagine(env, prompt) {
+  const stile = 'Realistic cinematic fantasy illustration, Dungeons and Dragons, dramatic volumetric lighting, highly detailed, painterly realism, no text, no watermark. ';
+  if (env.IMG_FINTA) return Uint8Array.from(atob('/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/yQALCAABAAEBAREA/8wABgAQEAX/2gAIAQEAAD8A0s8g/9k='), c => c.charCodeAt(0));
+  if (!env.AI) return null;
+  const r = await env.AI.run('@cf/black-forest-labs/flux-1-schnell', { prompt: stile + prompt, steps: 6 });
+  return r?.image ? Uint8Array.from(atob(r.image), c => c.charCodeAt(0)) : null;
 }
 // Eventi stagionali del mondo reale: il master li intreccia nella storia se ha senso
 function stagione() {

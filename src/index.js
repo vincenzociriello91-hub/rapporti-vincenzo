@@ -16,6 +16,8 @@ export default {
     if (req.method === 'POST' && url.pathname === '/chiedi') return chiedi(req, env);
     if (req.method === 'POST' && url.pathname === '/gemini') return gemini(req, env);
     if (req.method === 'GET' && url.pathname === '/prova-assistente') return provaAssistente(env);
+    const md = url.pathname.match(/^\/tavolo\/([A-Za-z0-9]{6,12})\/media\/(voce|img)\/[a-z0-9]{4,30}$/);
+    if (req.method === 'GET' && md) return env.TAVOLO.get(env.TAVOLO.idFromName(md[1].toUpperCase())).fetch(req);
     const t = url.pathname.match(/^\/tavolo\/([A-Za-z0-9]{6,12})\/ws$/);
     if (req.method === 'GET' && t) return apriTavolo(req, env, t[1]);
     if (req.method === 'GET' && url.pathname === '/turn') return turn(req, env);
