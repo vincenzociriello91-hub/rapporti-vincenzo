@@ -5,6 +5,19 @@ import { DurableObject } from 'cloudflare:workers';
 
 const ORIGINI = ['https://vincenzociriello91-hub.github.io', 'http://localhost:8765'];
 const MAX_MSG = 200000;
+const COMPAGNI_ANIMALI = { cane: { pf: 13, ca: 12, abilita: 'fiuto, morso' }, lupo: { pf: 11, ca: 13, abilita: 'branco, morso' }, falco: { pf: 1, ca: 13, abilita: 'vista acuta, volo' }, gatto: { pf: 2, ca: 12, abilita: 'furtività' }, cavallo: { pf: 19, ca: 10, abilita: 'cavalcatura, veloce' }, pony: { pf: 11, ca: 10, abilita: 'cavalcatura, robusto' }, mulo: { pf: 11, ca: 10, abilita: 'porta carichi' }, corvo: { pf: 1, ca: 12, abilita: 'imita voci, volo' } };
+const STANZE_BASE = { dormitorio: { nome: 'Dormitorio', prezzo: 150, bonus: 'riposo lungo: tutti recuperano anche 1 dado vita' }, laboratorio: { nome: 'Laboratorio', prezzo: 250, bonus: '+2 ai tiri per creare oggetti' }, stalla: { nome: 'Stalla', prezzo: 150, bonus: 'cavalcature al sicuro, viaggi più veloci' }, cappella: { nome: 'Cappella', prezzo: 300, bonus: 'una benedizione per sessione: vantaggio a un tiro salvezza' }, biblioteca: { nome: 'Biblioteca', prezzo: 300, bonus: 'vantaggio alle prove di conoscenza una volta per sessione' }, armeria: { nome: 'Armeria', prezzo: 400, bonus: 'armi riparate e affilate: +1 ai danni del primo colpo di ogni scontro' } };
+const MESTIERI = { alchimista: 'Alchimista', fabbro: 'Fabbro', cuoco: 'Cuoco', erborista: 'Erborista', arcaio: 'Arcaio' };
+const RICETTE = [
+  { nome: 'Pozione di guarigione', risultato: 'Pozione di guarigione', ingredienti: ['Erbe medicinali', 'Fiala'], costo: 10, cd: 12, car: 'sag', mestiere: 'alchimista' },
+  { nome: 'Antidoto', risultato: 'Antidoto', ingredienti: ['Erbe medicinali'], costo: 15, cd: 13, car: 'int', mestiere: 'erborista' },
+  { nome: 'Frecce (20)', risultato: 'Frecce (20)', ingredienti: ['Legno robusto', 'Piume'], costo: 2, cd: 10, car: 'des', mestiere: 'arcaio' },
+  { nome: 'Pugnale', risultato: 'Pugnale', ingredienti: ['Minerale di ferro'], costo: 5, cd: 12, car: 'for', mestiere: 'fabbro' },
+  { nome: 'Razioni da viaggio', risultato: 'Razioni (3 giorni)', ingredienti: ['Carne'], costo: 1, cd: 8, car: 'sag', mestiere: 'cuoco' },
+  { nome: 'Stufato del cacciatore', risultato: 'Stufato del cacciatore (+5 PF a chi lo mangia)', ingredienti: ['Carne', 'Erbe medicinali'], costo: 2, cd: 11, car: 'sag', mestiere: 'cuoco' }
+];
+const RARI = [{ nome: 'Pozione di guarigione superiore', prezzo: 150 }, { nome: 'Mantello elfico', prezzo: 500 }, { nome: 'Corda di seta (15 m)', prezzo: 10 }, { nome: 'Pergamena di Scudo', prezzo: 80 }, { nome: 'Anello di calore', prezzo: 300 }, { nome: 'Pietra della buona sorte', prezzo: 450 }, { nome: 'Fiala di fuoco dell\'alchimista', prezzo: 50 }, { nome: 'Mappa di un tesoro sepolto', prezzo: 120 }, { nome: 'Stivali della leggerezza', prezzo: 350 }, { nome: 'Erbe medicinali', prezzo: 3 }, { nome: 'Minerale di ferro', prezzo: 4 }, { nome: 'Piume', prezzo: 1 }, { nome: 'Fiala', prezzo: 1 }];
+const SEGRETI = ['Sei in cerca di un fratello scomparso: chiedi di lui a ogni PNG importante.', 'Devi una grossa somma a un usuraio: metti da parte 200 monete senza dirlo agli altri.', 'Sei stato cacciato dalla tua gilda: riconquista il loro rispetto con un\'impresa.', 'Hai giurato di proteggere un compagno del gruppo, anche a costo della vita.', 'Colleziona un trofeo da ogni nemico importante sconfitto.', 'Un antico spirito ti parla in sogno: segui i suoi segni.', 'Vuoi diventare famoso: fai in modo che il tuo nome arrivi in ogni città.', 'Cerchi la spada di tuo nonno, perduta in un dungeon della regione.'];
 const SUONI = ['porta', 'colpo', 'magia', 'monete', 'pozione', 'vittoria', 'sconfitta', 'raro', 'ferito', 'successo', 'critico', 'livello', 'tocco', 'tuono'];
 const ATTESA_MASTER = 3500; // ms di silenzio prima che il master AI risponda a quanto detto
 
@@ -212,6 +225,88 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
     const d = (dopo.pf || 0) - (prima.pf || 0);
     await this.conta(id, d < 0 ? { danniSubiti: -d, ...(prima.pf > 0 && dopo.pf <= 0 ? { cadute: 1 } : {}) } : { cure: d });
   }
+  // ---------- mondo vivo: bacheca, voto, enigmi, nemesi, scelte, sogni, segreti, minacce, reputazione, compagni, casa, mestieri ----------
+  async mondoVivo(vedeSegreti) {
+    const [missioni, voto, enigma, nemesi, scelte, minacce, base, mo] = await Promise.all(['missioni', 'voto', 'enigma', 'nemesi', 'scelte', 'minacce', 'base', 'mondo'].map(k => this.get(k, null)));
+    return { missioni: missioni || [], voto, enigma: enigma ? { ...enigma, risposta: vedeSegreti ? enigma.risposta : undefined } : null, nemesi, scelte: scelte || [], minacce: minacce || [], base, reputazioneLuoghi: mo?.reputazioneLuoghi || {}, catalogo: { ricette: RICETTE, stanze: STANZE_BASE, mestieri: MESTIERI, specie: Object.keys(COMPAGNI_ANIMALI) } };
+  }
+  async annuncia(testoEv, tipo = 'sistema') { const ev = await this.diario(tipo, testoEv); this.tutti({ t: 'diario', ev }); }
+  async aggiornaMondo() { const per = { false: JSON.stringify({ t: 'mondo_vivo', ...(await this.mondoVivo(false)) }), true: JSON.stringify({ t: 'mondo_vivo', ...(await this.mondoVivo(true)) }) }; for (const ws of this.ctx.getWebSockets()) { const a = ws.deserializeAttachment(); if (a?.membro) try { ws.send(per[!!a.vede]); } catch {} } }
+  async eventoMondo(e) {
+    const t = Date.now();
+    switch (e.tipo) {
+      case 'missione': { const l = await this.get('missioni', []), titolo = testo(e.titolo, 80); if (!titolo || l.some(x => x.titolo === titolo)) return; l.push({ id: 'q' + t.toString(36), titolo, descrizione: testo(e.descrizione, 300), ricompensa: testo(e.ricompensa, 80), stato: 'aperta', t }); await this.put('missioni', l.slice(-12)); await this.annuncia(`Nuova missione sulla bacheca: ${titolo}.`); break; }
+      case 'missione_fatta': { const l = await this.get('missioni', []), q = l.find(x => x.titolo === testo(e.titolo, 80)); if (!q) return; q.stato = 'completata'; await this.put('missioni', l); await this.annuncia(`Missione completata: ${q.titolo}!`); this.tutti({ t: 'suono', nome: 'vittoria' }); break; }
+      case 'voto': { const opzioni = (Array.isArray(e.opzioni) ? e.opzioni : []).map(o => testo(o, 60)).filter(Boolean).slice(0, 4); if (opzioni.length < 2) return; await this.put('voto', { domanda: testo(e.domanda, 160), opzioni, voti: {}, t }); break; }
+      case 'enigma': { if (!e.domanda || !e.risposta) return; await this.put('enigma', { domanda: testo(e.domanda, 400), risposta: testo(e.risposta, 60), indizio: testo(e.indizio, 160), tentativi: 0, t }); break; }
+      case 'nemesi': { const n = await this.get('nemesi', null); await this.put('nemesi', { nome: testo(e.nome, 60) || n?.nome, descrizione: testo(e.descrizione, 300) || n?.descrizione, incontri: (n?.nome === e.nome ? n.incontri : 0) + 1, fughe: n?.fughe || 0, t }); break; }
+      case 'nemesi_fuga': { const n = await this.get('nemesi', null); if (!n) return; n.fughe = (n.fughe || 0) + 1; n.ultimaFuga = testo(e.motivo, 160); await this.put('nemesi', n); await this.annuncia(`${n.nome} è fuggito... ma tornerà.`); break; }
+      case 'scelta': { const l = await this.get('scelte', []); l.push({ descrizione: testo(e.descrizione, 200), peso: ['buona', 'cattiva', 'ambigua'].includes(e.peso) ? e.peso : 'ambigua', t }); await this.put('scelte', l.slice(-40)); break; }
+      case 'sogno': { const p = await this.get('pg:' + e.pg); if (!p || !e.testo) return; p.sogni = [...(p.sogni || []), { testo: testo(e.testo, 500), t }].slice(-20); await this.put('pg:' + e.pg, p); this.invia(this.wsDi(e.pg), { t: 'sogno', testo: testo(e.testo, 500) }); return; }
+      case 'segreto_fatto': { const p = await this.get('pg:' + e.pg); if (!p?.segreto || p.segreto.fatto) return; p.segreto.fatto = true; p.px = (p.px || 0) + 300; await this.put('pg:' + e.pg, p); this.invia(this.wsDi(e.pg), { t: 'scheda', per: e.pg, pg: p }); this.invia(this.wsDi(e.pg), { t: 'avviso', msg: 'Hai realizzato il tuo obiettivo segreto: +300 PX!' }); return; }
+      case 'minaccia': { const l = await this.get('minacce', []), nome = testo(e.nome, 60); if (!nome) return; const x = l.find(m => m.nome === nome); if (x) x.livello = Math.min(5, x.livello + 1); else l.push({ nome, descrizione: testo(e.descrizione, 240), livello: 1, t }); await this.put('minacce', l.slice(-8)); break; }
+      case 'minaccia_sventata': { const l = await this.get('minacce', []), x = l.find(m => m.nome === testo(e.nome, 60)); if (!x) return; x.sventata = true; await this.put('minacce', l); await this.annuncia(`Minaccia sventata: ${x.nome}.`); break; }
+      case 'reputazione_luogo': { const mo = await this.get('mondo', { fazioni: {}, valute: {}, viaggi: [], notizie: [] }), luogo = testo(e.luogo, 60); if (!luogo) return; mo.reputazioneLuoghi = mo.reputazioneLuoghi || {}; mo.reputazioneLuoghi[luogo] = Math.max(-100, Math.min(100, (mo.reputazioneLuoghi[luogo] || 0) + (Number(e.delta) || 0))); await this.put('mondo', mo); this.tutti({ t: 'mondo', mondo: mo }); break; }
+      case 'compagno': { const p = await this.get('pg:' + e.pg), sp = COMPAGNI_ANIMALI[e.specie]; if (!p || !sp) return; p.compagni = [...(p.compagni || []), { nome: testo(e.nome, 30) || e.specie, specie: e.specie, ...sp, pfMax: sp.pf }].slice(-3); await this.put('pg:' + e.pg, p); this.tutti({ t: 'scheda', per: e.pg, pg: p }); await this.annuncia(`${p.nome} ha un nuovo compagno: ${testo(e.nome, 30) || e.specie} (${e.specie}).`); return; }
+    }
+    await this.aggiornaMondo();
+  }
+  async missioneAccetta(io, id) {
+    const l = await this.get('missioni', []), q = l.find(x => x.id === id && x.stato === 'aperta'), p = await this.get('pg:' + io); if (!q) return;
+    q.stato = 'accettata'; await this.put('missioni', l); await this.annuncia(`${p?.nome || 'Il gruppo'} accetta la missione: ${q.titolo}.`); await this.aggiornaMondo();
+  }
+  async vota(io, scelta) {
+    const v = await this.get('voto', null); if (!v || !(scelta >= 0 && scelta < v.opzioni.length)) return;
+    v.voti[io] = scelta; await this.put('voto', v);
+    const giocatori = Object.entries(await this.get('membri', {})).filter(([, m]) => m.ruolo === 'giocatore').map(([id]) => id);
+    if (giocatori.every(id => v.voti[id] !== undefined)) return this.chiudiVoto(); else await this.aggiornaMondo();
+  }
+  async chiudiVoto() {
+    const v = await this.get('voto', null); if (!v) return;
+    const conta = v.opzioni.map((_, i) => Object.values(v.voti).filter(x => x === i).length), max = Math.max(...conta), vince = v.opzioni[conta.indexOf(max)];
+    await this.put('voto', null); await this.annuncia(`Il gruppo ha votato "${v.domanda}": ${vince} (${conta.map((n, i) => `${v.opzioni[i]} ${n}`).join(', ')}).`, 'comando');
+    await this.aggiornaMondo(); await this.programmaMaster(true);
+  }
+  async rispondiEnigma(io, me, risposta) {
+    const en = await this.get('enigma', null); if (!en || !risposta.trim()) return;
+    const norm = x => x.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9 ]/g, '').replace(/\b(il|lo|la|i|gli|le|un|uno|una|l)\b/g, '').replace(/\s+/g, ' ').trim();
+    const p = await this.get('pg:' + io), chi = p?.nome || me.nome;
+    if (norm(risposta) && (norm(risposta) === norm(en.risposta) || norm(risposta).includes(norm(en.risposta)))) {
+      await this.put('enigma', null); await this.annuncia(`${chi} risolve l'enigma: «${en.risposta}»!`, 'comando'); this.tutti({ t: 'suono', nome: 'successo' }); await this.aggiornaMondo(); return this.programmaMaster(true);
+    }
+    en.tentativi++; await this.put('enigma', en);
+    await this.annuncia(`${chi} prova: «${testo(risposta, 60)}»... non è la risposta.${en.tentativi >= 3 && en.indizio ? ' Indizio: ' + en.indizio : ''}`);
+    await this.aggiornaMondo();
+  }
+  async baseCompra(io, cosa) {
+    const g = await this.get('gruppo', { oro: 0, oggetti: [] }), base = await this.get('base', null), p = await this.get('pg:' + io);
+    const prezzo = !base ? 500 : STANZE_BASE[cosa]?.prezzo; if (!prezzo || (base && base.stanze.includes(cosa))) return;
+    if ((g.oro || 0) < prezzo) return this.invia(this.wsDi(io), { t: 'errore', msg: `Servono ${prezzo} mo nel tesoro comune (ora ${g.oro || 0})` });
+    g.oro -= prezzo; await this.put('gruppo', g); this.tutti({ t: 'gruppo', gruppo: g });
+    if (!base) { await this.put('base', { nome: 'La casa del gruppo', stanze: [], t: Date.now() }); await this.annuncia(`${p?.nome || 'Il gruppo'} compra una casa per il gruppo (500 mo dal tesoro comune).`); }
+    else { base.stanze.push(cosa); await this.put('base', base); await this.annuncia(`Nuova stanza nella casa del gruppo: ${STANZE_BASE[cosa].nome} (${STANZE_BASE[cosa].bonus}).`); }
+    await this.aggiornaMondo();
+  }
+  async creaOggetto(ws, io, nomeRicetta) {
+    const p = await this.get('pg:' + io), r = RICETTE.find(x => x.nome === nomeRicetta); if (!p || !r) return;
+    const mancano = r.ingredienti.filter(i => !(p.equip || []).some(e => e.nome.toLowerCase().startsWith(i.toLowerCase())));
+    if (mancano.length) return this.invia(ws, { t: 'errore', msg: `Mancano: ${mancano.join(', ')}` });
+    if ((p.oro || 0) < r.costo) return this.invia(ws, { t: 'errore', msg: `Servono ${r.costo} mo` });
+    const base = await this.get('base', null), sconto = base?.stanze.includes('laboratorio') ? 2 : 0;
+    const bonus = Math.floor(((p.car?.[r.car] || 10) - 10) / 2) + (p.mestiere === r.mestiere ? 3 : 0) + sconto, tiro = 1 + Math.floor(Math.random() * 20), tot = tiro + bonus, ok = tot >= r.cd;
+    for (const i of r.ingredienti) { const k = p.equip.findIndex(e => e.nome.toLowerCase().startsWith(i.toLowerCase())); if ((p.equip[k].qta || 1) > 1) p.equip[k].qta--; else p.equip.splice(k, 1); }
+    p.oro -= r.costo;
+    if (ok) { const es = p.equip.find(e => e.nome === r.risultato && !e.indossato); if (es) es.qta = (es.qta || 1) + 1; else p.equip.push({ nome: r.risultato, qta: 1, indossato: false }); }
+    await this.put('pg:' + io, p); this.tutti({ t: 'scheda', per: io, pg: p });
+    await this.annuncia(`${p.nome} prova a creare ${r.risultato}: ${tiro}${bonus >= 0 ? '+' : ''}${bonus} = ${tot} contro CD ${r.cd}: ${ok ? 'riuscito!' : 'fallito, ingredienti persi.'}`, 'scheda');
+    if (ok) this.tutti({ t: 'suono', nome: 'pozione' });
+  }
+  // obiettivo segreto assegnato alla creazione del personaggio (lo sanno solo il giocatore e il master)
+  segretoNuovo() { return { testo: SEGRETI[Math.floor(Math.random() * SEGRETI.length)], fatto: false }; }
+  // le minacce ignorate crescono a ogni nuova sessione
+  async minacceCrescono() { const l = await this.get('minacce', []); let su = 0; for (const m of l) if (!m.sventata && m.livello < 5) { m.livello++; su++; } if (su) { await this.put('minacce', l); await this.annuncia(`Mentre eravate lontani, ${su === 1 ? 'una minaccia è cresciuta' : su + ' minacce sono cresciute'}.`); } }
+  // il mercante ambulante passa ogni tanto con oggetti rari diversi
+  async forseMercante(luogo) { if (!luogo || ['dungeon', 'grotta'].includes(luogo.tipo) || Math.random() > 0.15 || await this.get('negozio')) return; const merci = [...RARI].sort(() => Math.random() - 0.5).slice(0, 5); await this.apriNegozio({ nome: 'Il mercante ambulante', merci }); await this.annuncia('Un mercante ambulante arriva con il suo carretto pieno di cose rare: oggi solo per poco.'); }
   // storia e famiglia del personaggio scritte con il master (dalle risposte del giocatore)
   async storia(io, m) {
     const pg = await this.get('pg:' + io); if (!pg) return;
@@ -256,9 +351,12 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
     const ev = await this.diario('gruppo', `Si apre il banco: ${nome}.`, 'master'); this.tutti({ t: 'diario', ev });
     this.tutti({ t: 'negozio', negozio: n });
   }
+  // reputazione del gruppo nel luogo: da -100 a +100, prezzi fino al 25% più bassi o più alti
+  async fattorePrezzo() { const mo = await this.get('mondo', {}), l = await this.get('luogo:' + await this.get('luogoAttuale')), r = mo.reputazioneLuoghi?.[l?.genitore ? (await this.get('luogo:' + l.genitore))?.nome : l?.nome] || 0; return 1 - Math.max(-100, Math.min(100, r)) / 400; }
   async compra(ws, io, me, m) {
-    const n = await this.get('negozio'), merce = n?.merci.find(x => x.nome === m.merce), p = await this.get('pg:' + io);
-    if (!merce || !p) return;
+    const n = await this.get('negozio'), merceBase = n?.merci.find(x => x.nome === m.merce), p = await this.get('pg:' + io);
+    if (!merceBase || !p) return;
+    const merce = { ...merceBase, prezzo: Math.max(1, Math.round(merceBase.prezzo * await this.fattorePrezzo())) };
     if ((p.oro || 0) < merce.prezzo) return this.invia(ws, { t: 'errore', msg: `Non hai abbastanza monete (servono ${merce.prezzo} mo)` });
     p.oro -= merce.prezzo; await this.conta(io, { speso: merce.prezzo });
     const es = (p.equip || []).find(x => x.nome === merce.nome && !x.indossato);
@@ -270,7 +368,7 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
   async vendi(ws, io, me, m) {
     const n = await this.get('negozio'), p = await this.get('pg:' + io), i = Number(m.indice), og = p?.equip?.[i];
     if (!n || !og) return;
-    const prezzo = Math.max(0, Math.floor((n.merci.find(x => x.nome === og.nome)?.prezzo ?? prezzoBase(og.nome)) / 2));
+    const prezzo = Math.max(0, Math.floor((n.merci.find(x => x.nome === og.nome)?.prezzo ?? prezzoBase(og.nome)) / 2 / await this.fattorePrezzo()));
     if ((og.qta || 1) > 1) og.qta--; else p.equip.splice(i, 1);
     p.oro = (p.oro || 0) + prezzo;
     await this.put('pg:' + io, p);
@@ -377,10 +475,12 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
   tutti(obj, filtro) {
     if (obj.t === 'narra' && obj.testo && this.env.GEMINI_KEY && !obj.voce) { obj.voce = 'v' + Date.now().toString(36) + Math.floor(Math.random() * 1e4); this.ctx.waitUntil(this.voce(obj.voce, obj.testo, obj.png)); }
     const s = JSON.stringify(obj);
+    // obiettivo segreto e sogni di un personaggio: solo al suo giocatore e al master
+    const nascosto = obj.t === 'scheda' && (obj.pg?.segreto || obj.pg?.sogni) ? JSON.stringify({ ...obj, pg: { ...obj.pg, segreto: undefined, sogni: undefined } }) : null;
     for (const ws of this.ctx.getWebSockets()) {
       const m = this.membroDi(ws);
       if (!m || (filtro && !filtro(m))) continue;
-      try { ws.send(s); } catch {}
+      try { ws.send(nascosto && m !== obj.per && !ws.deserializeAttachment()?.vede ? nascosto : s); } catch {}
     }
   }
   online() { return [...new Set(this.ctx.getWebSockets().map(ws => this.membroDi(ws)).filter(Boolean))]; }
@@ -399,8 +499,8 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
       this.get('campagna'), this.get('membri', {}), this.get('luoghi', {}), this.get('luogoAttuale', null),
       this.get('segnalini', {}), this.get('diario', []), this.get('dadi', []), this.get('memoria', ''), this.get('suggerimenti', [])]);
     const pg = {};
-    for (const id of Object.keys(membri)) { const s = await this.get('pg:' + id); if (s) pg[id] = s; }
     const io = membri[perMembro];
+    for (const id of Object.keys(membri)) { const s = await this.get('pg:' + id); if (s) pg[id] = id === perMembro || io?.ruolo === 'master' ? s : { ...s, segreto: undefined, sogni: undefined }; }
     const vedeSegreti = io && (io.ruolo === 'master' || io.admin);
     const membriPubblici = Object.fromEntries(Object.entries(membri).map(([id, m]) => [id, { nome: m.nome, ruolo: m.ruolo, colore: m.colore, admin: !!m.admin }]));
     return {
@@ -411,7 +511,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
       mondo: await this.get('mondo', { fazioni: {}, valute: {}, viaggi: [], notizie: [] }), relazioni: await this.get('relazioni', {}),
       combattimento: await this.get('combattimento', null), aree: await this.get('aree', []), gruppo: await this.get('gruppo', { oro: 0, oggetti: [] }),
       mostri: await this.get('mostri', {}), volti: await this.get('volti', {}), negozio: await this.get('negozio', null),
-      png: await this.get('png', {}), memoriale: await this.get('memoriale', []),
+      png: await this.get('png', {}), memoriale: await this.get('memoriale', []), ...(await this.mondoVivo(vedeSegreti)),
       avventura: vedeSegreti ? await this.avventuraPerMaster() : undefined,
       memoria: vedeSegreti ? memoria : undefined, suggerimenti: vedeSegreti ? suggerimenti.slice(-30) : undefined,
       costi: vedeSegreti ? await this.get('costi', null) : undefined
@@ -447,6 +547,16 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
         case 'parlato': return this.parlato(io, me, m);
         case 'comando': { const ev = await this.diario('comando', `${me.nome}: ${testo(m.testo, 300)}`, io); return this.tutti({ t: 'diario', ev }); }
         case 'storia': return this.storia(io, m);
+        case 'missione_accetta': return this.missioneAccetta(io, String(m.id || ''));
+        case 'missione_nuova': if (!capo) return; return this.eventoMondo({ tipo: 'missione', titolo: m.titolo, descrizione: m.descrizione, ricompensa: m.ricompensa });
+        case 'voto_apri': if (!capo) return; return this.eventoMondo({ tipo: 'voto', domanda: m.domanda, opzioni: m.opzioni });
+        case 'voto': return this.vota(io, Number(m.scelta));
+        case 'voto_chiudi': if (!capo) return; return this.chiudiVoto();
+        case 'enigma_risposta': return this.rispondiEnigma(io, me, String(m.risposta || ''));
+        case 'base': return this.baseCompra(io, String(m.cosa || ''));
+        case 'crea_oggetto': return this.creaOggetto(ws, io, String(m.ricetta || ''));
+        case 'mestiere': { const p = await this.get('pg:' + io); if (!p || !MESTIERI[m.mestiere]) return; p.mestiere = m.mestiere; await this.put('pg:' + io, p); return this.tutti({ t: 'scheda', per: io, pg: p }); }
+        case 'compagno_nuovo': if (!capo) return; return this.eventoMondo({ tipo: 'compagno', pg: membri[m.per] ? m.per : io, nome: m.nome, specie: m.specie });
         case 'caduto': { const chi = capo && m.pg ? String(m.pg) : io; return this.caduto(chi, testo(m.motivo, 200)); }
         case 'suono': if (!capo || !SUONI.includes(m.nome)) return; return this.tutti({ t: 'suono', nome: m.nome }); // tavola dei suoni del master
         case 'narra': if (!capo) return; { const ev = await this.diario('narrazione', m.testo, io); return this.tutti({ t: 'narra', testo: ev.testo, png: testo(m.png, 40), chi: io }); }
@@ -519,7 +629,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
   }
 
   async accetta(ws, id, membri, extra = {}) {
-    ws.serializeAttachment({ membro: id });
+    ws.serializeAttachment({ membro: id, vede: membri[id]?.ruolo === 'master' || !!membri[id]?.admin });
     this.invia(ws, { t: 'benvenuto', io: id, ...extra, stato: await this.statoCompleto(id) });
     const visto = membri[id].visto || membri[id].dal || 0, persi = (await this.get('riepiloghi', [])).filter(r => r.t > visto);
     if (persi.length && visto) this.invia(ws, { t: 'bentornato', riepiloghi: persi.slice(-3) });
@@ -583,7 +693,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
       if (m.ambientazione) c.ambientazione = testo(m.ambientazione, 400);
       if (m.nome) c.nome = testo(m.nome, 60);
       if (m.masterTipo) c.masterTipo = m.masterTipo === 'umano' ? 'umano' : 'ai';
-      if (m.nuovaSessione) { c.sessione = (c.sessione || 1) + 1; c.invito = codiceCasuale(8); await this.diario('sistema', `Inizia la sessione ${c.sessione}.`); this.ctx.waitUntil(this.evolviMondo(false)); }
+      if (m.nuovaSessione) { c.sessione = (c.sessione || 1) + 1; c.invito = codiceCasuale(8); await this.diario('sistema', `Inizia la sessione ${c.sessione}.`); this.ctx.waitUntil(this.evolviMondo(false)); await this.minacceCrescono(); }
       if (m.ruoli && me.admin) for (const [id, r] of Object.entries(m.ruoli)) if (membri[id] && ['giocatore', 'spettatore', 'master'].includes(r)) membri[id].ruolo = r;
       await this.put('campagna', c); await this.put('membri', membri);
     }
@@ -597,6 +707,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     if (!m.pg || typeof m.pg !== 'object') return;
     if (JSON.stringify(m.pg).length > 60000) return;
     const primaPg = await this.get('pg:' + per);
+    m.pg.segreto = primaPg?.segreto || (m.pg.nome ? this.segretoNuovo() : undefined); m.pg.sogni = primaPg?.sogni; // segreti e sogni li scrive solo il server
     await this.put('pg:' + per, m.pg);
     await this.contaPf(per, primaPg, m.pg);
     this.tutti({ t: 'scheda', per, pg: m.pg, nota: m.nota ? testo(m.nota, 300) : null, da: io });
@@ -705,6 +816,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     if (nuovo) { const cal = (await this.get('mondo', {}))?.calendario || {}; this.ctx.waitUntil(this.illustra(`${SCENE_EN[luogo.tipo] || SCENE_EN.aperto}, called "${luogo.nome}"${cal.ora !== undefined ? `, at ${cal.ora}:00` : ''}${cal.meteo ? `, weather: ${cal.meteo}` : ''}${cal.stagione ? `, season: ${cal.stagione}` : ''}`, luogo.nome, true)); }
     this.tutti({ t: 'luogo', luogo, segnalini: seg, luoghi: await this.get('luoghi', {}) });
     this.tutti({ t: 'diario', ev });
+    if (precedente !== id && !luogo.genitore) await this.forseMercante(luogo);
   }
 
   async luogoCon(id) {
@@ -887,7 +999,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     for (const [id, mm] of Object.entries(membri)) {
       if (mm.ruolo !== 'giocatore') continue;
       const p = await this.get('pg:' + id);
-      if (p) pgs.push({ id, giocatore: mm.nome, nome: p.nome, storia: p.storia ? p.storia.slice(0, 400) : undefined, razza: p.razza, classe: p.classe, livello: p.livello, pf: `${p.pf}/${p.pfMax}`, ca: p.ca, caratteristiche: p.car, condizioni: p.condizioni || [], equipaggiato: (p.equip || []).filter(e => e.indossato).map(e => e.nome + (e.bonus ? ' +' + e.bonus : '')), oro: p.oro, classi: p.classi, talenti: p.talenti, incantesimi: (p.incantesimi || []).map(i => i.nome), aspetto: p.aspetto ? { altezza: p.aspetto.altezza, peso: p.aspetto.peso, corporatura: p.aspetto.corporatura } : undefined });
+      if (p) pgs.push({ id, giocatore: mm.nome, nome: p.nome, storia: p.storia ? p.storia.slice(0, 400) : undefined, razza: p.razza, classe: p.classe, livello: p.livello, pf: `${p.pf}/${p.pfMax}`, ca: p.ca, caratteristiche: p.car, condizioni: p.condizioni || [], equipaggiato: (p.equip || []).filter(e => e.indossato).map(e => e.nome + (e.bonus ? ' +' + e.bonus : '')), oro: p.oro, classi: p.classi, talenti: p.talenti, incantesimi: (p.incantesimi || []).map(i => i.nome), aspetto: p.aspetto ? { altezza: p.aspetto.altezza, peso: p.aspetto.peso, corporatura: p.aspetto.corporatura } : undefined, mestiere: p.mestiere, compagni: p.compagni?.map(a => `${a.nome} (${a.specie})`), obiettivo_segreto: p.segreto && !p.segreto.fatto ? p.segreto.testo : undefined });
       else pgs.push({ id, giocatore: mm.nome, nome: '(scheda non ancora creata)' });
     }
     return { c, pgs, diario: diario.slice(-40), memoria, luogo, luoghi };
@@ -923,6 +1035,16 @@ Eventi possibili (solo se accadono davvero):
 {"tipo":"tiro","pg":"<id>","prova":"Percezione","cd":15}
 {"tipo":"png_nota","nome":"Oste Bruno","nota":"cosa si scopre di lui, max 15 parole"} (per la galleria dei PNG: aspetto, carattere, segreti scoperti dal gruppo; solo cose che il gruppo sa davvero)
 {"tipo":"morte","pg":"<id>","motivo":"..."} (solo quando un personaggio muore davvero secondo le regole: va nel memoriale e il giocatore potrà creare un erede)
+{"tipo":"missione","titolo":"...","descrizione":"...","ricompensa":"..."} (missione secondaria facoltativa sulla bacheca, quando il gruppo è in una taverna, villaggio o città: 1-3 alla volta) e {"tipo":"missione_fatta","titolo":"..."}
+{"tipo":"voto","domanda":"...","opzioni":["...","..."]} (quando il gruppo deve decidere insieme: ognuno vota dal telefono)
+{"tipo":"enigma","domanda":"indovinello o rompicapo","risposta":"una o due parole","indizio":"..."} (porte, statue, guardiani: i giocatori rispondono dall'app)
+{"tipo":"nemesi","nome":"...","descrizione":"..."} (il cattivo ricorrente: torna, si ricorda del gruppo, impara) e {"tipo":"nemesi_fuga","motivo":"..."} quando scappa per tornare più forte
+{"tipo":"scelta","descrizione":"...","peso":"buona|cattiva|ambigua"} (scelte morali importanti: cambiano il finale della campagna)
+{"tipo":"sogno","pg":"<id>","testo":"..."} (sogno o visione privata con un indizio segreto: la vede solo quel giocatore)
+{"tipo":"segreto_fatto","pg":"<id>"} (quando un personaggio realizza il suo obiettivo segreto) 
+{"tipo":"minaccia","nome":"...","descrizione":"..."} (un pericolo che cresce se il gruppo lo ignora) e {"tipo":"minaccia_sventata","nome":"..."}
+{"tipo":"reputazione_luogo","luogo":"nome del luogo","delta":n,"motivo":"..."} (come vi vede la gente di quel luogo: cambia i prezzi dei negozi)
+{"tipo":"compagno","pg":"<id>","nome":"...","specie":"cane|lupo|falco|gatto|cavallo|pony|mulo|corvo"} (animale compagno o cavalcatura)
 {"tipo":"suono","nome":"porta|colpo|magia|monete|pozione|vittoria|sconfitta|raro|ferito|successo"} (effetto sonoro su tutti i telefoni, nei momenti giusti: una porta che si apre, un colpo, un incantesimo, monete, una vittoria)
 {"tipo":"nemico","nome":"Goblin","x":n,"y":n,"pf":7,"ca":15} (segnalino sulla mappa, griglia ${W}x${H})
 {"tipo":"combattimento","azione":"inizia|prossimo|fine"} (inizia quando scoppia uno scontro: l'app tira l'iniziativa e gestisce i turni; "prossimo" quando un PNG o nemico ha finito il suo turno; "fine" quando lo scontro è finito)
@@ -931,6 +1053,8 @@ Eventi possibili (solo se accadono davvero):
 {"tipo":"bottino","oro":n,"oggetti":["..."]} (va nel tesoro comune del gruppo)
 {"tipo":"fazione","nome":"Gilda dei Ladri","descrizione":"..."} (nuova fazione) e {"tipo":"reputazione","fazione":"...","delta":n,"motivo":"..."} (da -100 a +100: i PNG delle fazioni trattano il gruppo di conseguenza)
 {"tipo":"tempo","giorni":n,"ora":0-23,"stagione":"primavera|estate|autunno|inverno","meteo":"sereno|nuvoloso|pioggia|temporale|neve|nebbia"} (quando passa il tempo o cambia il tempo atmosferico: la mappa mostra luce del giorno, notte, ombre del sole, pioggia, neve e nebbia; tieni coerenti ora e meteo con la narrazione)
+Ora e meteo cambiano la partita: di notte i PNG dormono, le botteghe sono chiuse, le guardie sospettose e i mostri più numerosi; con pioggia, nebbia o neve la vista è ridotta (svantaggio alle prove di Percezione basate sulla vista), le tracce si perdono e i viaggi sono più lenti; col temporale i fuochi si spengono e i rumori coprono i passi. Dillo nella narrazione quando conta.
+Il mondo è vivo (vedi "mondo_vivo"): fai tornare la nemesi nei momenti giusti, ricordati delle scelte morali (il finale della campagna dipende da loro), fai crescere le minacce ignorate (livello 1-5: a 5 colpiscono), metti missioni sulla bacheca quando il gruppo è in città, aiuta in segreto ogni personaggio verso il suo obiettivo segreto e ogni tanto manda un sogno privato con un indizio. Se c'è un enigma aperto aspetta la risposta dei giocatori: non dire la soluzione. Se c'è un voto aperto aspetta il risultato. La casa del gruppo e i compagni animali esistono: usali nella storia.
 {"tipo":"valuta","nome":"Corone di Argentea","cambio":0.5} (valuta locale e quanto vale in monete d'oro) e {"tipo":"valuta_pg","pg":"<id>","valuta":"...","quantita":n}
 Durante il combattimento rispetta l'ordine di iniziativa e gioca tu i turni dei nemici quando tocca a loro.${c.solitaria ? `
 PARTITA IN SOLITARIA: c'è un solo giocatore. Interpreti anche i suoi compagni alleati (${COMPAGNI.map(x => x.nome + ': ' + x.carattere).join('; ')}): falli parlare con la loro personalità, agire e combattere nel loro turno (descrivi le azioni e usa danno_nemico per i loro colpi), senza rubare la scena al giocatore. Dai qualche suggerimento in più su cosa si può fare e rispondi sempre subito.` : ''}${avv ? `
@@ -949,6 +1073,7 @@ AVVENTURA PRONTA "${AVVENTURE[avv.id].titolo}": seguila (trovi scene, segreti e 
       fazioni_e_reputazione: (await this.get('mondo', {}))?.fazioni || {},
       valute_locali: (await this.get('mondo', {}))?.valute || {},
       relazioni_tra_personaggi: await this.get('relazioni', {}),
+      mondo_vivo: await this.mondoVivo(true),
       png_incontrati: Object.entries(await this.get('png', {})).map(([nome, p]) => ({ nome, luogo: p.luogo })),
       ultimi_eventi: diario.map(d => `[${d.tipo}] ${d.testo}`)
     };
@@ -962,7 +1087,7 @@ AVVENTURA PRONTA "${AVVENTURE[avv.id].titolo}": seguila (trovi scene, segreti e 
     const out = leggiJSON(j.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '');
     if (!out) return;
     const narr = testo(out.narrazione, 1500).trim();
-    for (const e of (Array.isArray(out.eventi) ? out.eventi.slice(0, 12) : [])) { try { await this.applicaEvento(e); } catch {} }
+    for (const e of (Array.isArray(out.eventi) ? out.eventi.slice(0, 16) : [])) { try { await this.applicaEvento(e); } catch {} }
     const nomePng = testo(out.png, 40).trim();
     if (narr && nomePng) { // memoria dei PNG: lo stesso personaggio non cambia nome tra un turno e l'altro
       const png = await this.get('png', {});
@@ -1001,6 +1126,7 @@ AVVENTURA PRONTA "${AVVENTURE[avv.id].titolo}": seguila (trovi scene, segreti e 
       case 'avventura': return this.scenaAvventura(e.scena);
       case 'negozio': if (e.chiudi) { await this.put('negozio', null); return this.tutti({ t: 'negozio', negozio: null }); } return this.apriNegozio(e);
       case 'suono': if (SUONI.includes(e.nome)) this.tutti({ t: 'suono', nome: e.nome }); return;
+      case 'missione': case 'missione_fatta': case 'voto': case 'enigma': case 'nemesi': case 'nemesi_fuga': case 'scelta': case 'sogno': case 'segreto_fatto': case 'minaccia': case 'minaccia_sventata': case 'reputazione_luogo': case 'compagno': return this.eventoMondo(e);
       case 'png_nota': { const png = await this.get('png', {}), n = testo(e.nome, 40); if (!n || !e.nota) return; png[n] = { ...png[n], luogo: png[n]?.luogo || null, t: png[n]?.t || Date.now(), note: [...(png[n]?.note || []), testo(e.nota, 120)].slice(-6) }; await this.put('png', png); return this.tutti({ t: 'png', png }); }
       case 'morte': return this.caduto(String(e.pg || ''), testo(e.motivo, 200));
       case 'illustra': this.ctx.waitUntil(e.prompt ? this.illustra(testo(e.prompt, 600), testo(e.didascalia, 200)) : this.illustraScena()); return;
