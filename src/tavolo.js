@@ -67,7 +67,8 @@ export class Tavolo extends DurableObject {
       membri: membriPubblici, online: this.online(), pg,
       luoghi: luoghiIdx, luogo: attuale ? await this.get('luogo:' + attuale) : null,
       segnalini, diario: diario.slice(-120), dadi: dadi.filter(d => !d.segreto || vedeSegreti || d.chi === perMembro).slice(-40),
-      memoria: vedeSegreti ? memoria : undefined, suggerimenti: vedeSegreti ? suggerimenti.slice(-30) : undefined
+      memoria: vedeSegreti ? memoria : undefined, suggerimenti: vedeSegreti ? suggerimenti.slice(-30) : undefined,
+      costi: vedeSegreti ? await this.get('costi', null) : undefined
     };
   }
 
@@ -105,6 +106,17 @@ export class Tavolo extends DurableObject {
         case 'riassunto': return this.inviaRiassunto(ws);
         case 'stato': return this.invia(ws, { t: 'stato', stato: await this.statoCompleto(io) });
         case 'master_ora': return this.programmaMaster(true);
+        case 'esci': case 'rimuovi': {
+          const chi = m.t === 'rimuovi' && me.admin ? String(m.membro || '') : io;
+          if (!membri[chi] || (chi !== io && membri[chi].admin)) return;
+          const nome = membri[chi].nome;
+          delete membri[chi]; await this.put('membri', membri); await this.ctx.storage.delete('pg:' + chi);
+          const seg = await this.get('segnalini', {}); delete seg[chi]; await this.put('segnalini', seg);
+          const ev = await this.diario('sistema', `${nome} lascia la campagna.`);
+          for (const s2 of this.ctx.getWebSockets()) { const x = this.membroDi(s2); if (x === chi) { s2.serializeAttachment({ membro: null }); try { s2.close(1000, 'uscito'); } catch {} } }
+          for (const s2 of this.ctx.getWebSockets()) { const x = this.membroDi(s2); if (x) { this.invia(s2, { t: 'stato', stato: await this.statoCompleto(x) }); this.invia(s2, { t: 'diario', ev }); } }
+          return;
+        }
       }
     } catch (e) {
       this.invia(ws, { t: 'errore', msg: 'errore del server: ' + (e.message || e) });
@@ -278,6 +290,27 @@ export class Tavolo extends DurableObject {
     this.tutti({ t: 'rtc', da: io, dati: m.dati }, x => x === m.a);
   }
 
+  // ---------- uso dell'AI: chiamate e token per sessione (pannello costi) ----------
+  async g(corpo, compito = 'master') {
+    const r = await chiamaGemini(this.env, corpo);
+    if (r.ok) {
+      try {
+        const u = (await r.clone().json()).usageMetadata || {};
+        const c = await this.get('costi', { totale: { chiamate: 0, in: 0, out: 0 }, sessione: { n: 0, chiamate: 0, in: 0, out: 0 }, modelli: {}, compiti: {} });
+        const sess = (await this.get('campagna'))?.sessione || 1;
+        if (c.sessione.n !== sess) c.sessione = { n: sess, chiamate: 0, in: 0, out: 0 };
+        for (const k of ['totale', 'sessione']) { c[k].chiamate++; c[k].in += u.promptTokenCount || 0; c[k].out += (u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0); }
+        c.modelli[r.modello] = (c.modelli[r.modello] || 0) + 1;
+        c.compiti[compito] = (c.compiti[compito] || 0) + 1;
+        c.ultimo = { t: Date.now(), modello: r.modello, compito };
+        await this.put('costi', c);
+        const membri = await this.get('membri', {});
+        this.tutti({ t: 'costi', costi: c }, x => membri[x]?.ruolo === 'master' || membri[x]?.admin);
+      } catch {}
+    }
+    return r;
+  }
+
   // ---------- master AI ----------
   async parlato(io, me, m) {
     const frase = testo(m.testo, 600).trim();
@@ -351,7 +384,7 @@ Eventi possibili (solo se accadono davvero):
       personaggi: pgs,
       ultimi_eventi: diario.map(d => `[${d.tipo}] ${d.testo}`)
     };
-    const r = await chiamaGemini(this.env, {
+    const r = await this.g({
       systemInstruction: { parts: [{ text: istr }] },
       contents: [{ role: 'user', parts: [{ text: JSON.stringify(contesto) }] }],
       generationConfig: { temperature: 0.85, responseMimeType: 'application/json' }
@@ -393,7 +426,7 @@ Eventi possibili (solo se accadono davvero):
 
   async riassumi() {
     const [diario, memoria] = await Promise.all([this.get('diario', []), this.get('memoria', '')]);
-    const r = await chiamaGemini(this.env, { contents: [{ parts: [{ text: `Aggiorna la memoria di una campagna di D&D. Memoria attuale:\n${memoria || '(vuota)'}\n\nNuovi eventi:\n${diario.slice(-60).map(d => `[${d.tipo}] ${d.testo}`).join('\n')}\n\nScrivi la memoria aggiornata in italiano, massimo 350 parole, in punti brevi: trama, PNG incontrati (nome, ruolo, atteggiamento), promesse e debiti, nemici, luoghi e come sono cambiati, fazioni e reputazione del gruppo, stile di gioco preferito dal gruppo. Solo il testo.` }] }], generationConfig: { temperature: 0.2 } });
+    const r = await this.g({ contents: [{ parts: [{ text: `Aggiorna la memoria di una campagna di D&D. Memoria attuale:\n${memoria || '(vuota)'}\n\nNuovi eventi:\n${diario.slice(-60).map(d => `[${d.tipo}] ${d.testo}`).join('\n')}\n\nScrivi la memoria aggiornata in italiano, massimo 350 parole, in punti brevi: trama, PNG incontrati (nome, ruolo, atteggiamento), promesse e debiti, nemici, luoghi e come sono cambiati, fazioni e reputazione del gruppo, stile di gioco preferito dal gruppo. Solo il testo.` }] }], generationConfig: { temperature: 0.2 } }, 'memoria');
     if (!r.ok) return;
     const j = await r.json();
     const t = j.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('').trim();
@@ -403,7 +436,7 @@ Eventi possibili (solo se accadono davvero):
   async inviaRiassunto(ws) {
     const memoria = await this.get('memoria', '');
     const diario = await this.get('diario', []);
-    const r = await chiamaGemini(this.env, { contents: [{ parts: [{ text: `Sei il narratore di una campagna di D&D. Scrivi in italiano un "Nella puntata precedente..." di massimo 90 parole, da leggere ad alta voce, basato su:\n${memoria}\n${diario.slice(-30).map(d => d.testo).join('\n')}` }] }], generationConfig: { temperature: 0.7 } });
+    const r = await this.g({ contents: [{ parts: [{ text: `Sei il narratore di una campagna di D&D. Scrivi in italiano un "Nella puntata precedente..." di massimo 90 parole, da leggere ad alta voce, basato su:\n${memoria}\n${diario.slice(-30).map(d => d.testo).join('\n')}` }] }], generationConfig: { temperature: 0.7 } }, 'riassunto');
     if (!r.ok) return this.invia(ws, { t: 'errore', msg: 'riassunto non disponibile' });
     const j = await r.json();
     const t = j.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('').trim();
@@ -413,7 +446,7 @@ Eventi possibili (solo se accadono davvero):
   // Frase che il riconoscitore nell'app non ha capito → operazioni sulla scheda
   async interpreta(ws, io, me, m) {
     const frase = testo(m.testo, 400);
-    const r = await chiamaGemini(this.env, { contents: [{ parts: [{ text: `Un giocatore di D&D (${m.regole === '3.5' ? '3.5' : '5e'}) ha detto: "${frase}". Se è un comando per modificare la sua scheda personaggio, traducilo in operazioni. Rispondi SOLO JSON: {"ops":[...]} con elementi tra: {"op":"car","car":"for|des|cos|int|sag|car","delta":n} {"op":"pf","delta":n} {"op":"pfmax","delta":n} {"op":"livello","delta":1} {"op":"oro","delta":n} {"op":"px","delta":n} {"op":"oggetto","nome":"...","qta":n} {"op":"togli","nome":"..."} {"op":"indossa","nome":"..."} {"op":"condizione","nome":"...","attiva":true} {"op":"ca","delta":n}. Se non è un comando per la scheda: {"ops":[]}` }] }], generationConfig: { temperature: 0, responseMimeType: 'application/json' } });
+    const r = await this.g({ contents: [{ parts: [{ text: `Un giocatore di D&D (${m.regole === '3.5' ? '3.5' : '5e'}) ha detto: "${frase}". Se è un comando per modificare la sua scheda personaggio, traducilo in operazioni. Rispondi SOLO JSON: {"ops":[...]} con elementi tra: {"op":"car","car":"for|des|cos|int|sag|car","delta":n} {"op":"pf","delta":n} {"op":"pfmax","delta":n} {"op":"livello","delta":1} {"op":"oro","delta":n} {"op":"px","delta":n} {"op":"oggetto","nome":"...","qta":n} {"op":"togli","nome":"..."} {"op":"indossa","nome":"..."} {"op":"condizione","nome":"...","attiva":true} {"op":"ca","delta":n}. Se non è un comando per la scheda: {"ops":[]}` }] }], generationConfig: { temperature: 0, responseMimeType: 'application/json' } }, 'comandi');
     if (!r.ok) return this.invia(ws, { t: 'interpretato', id: m.id, ops: [] });
     const j = await r.json();
     const out = leggiJSON(j.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '');
@@ -423,7 +456,7 @@ Eventi possibili (solo se accadono davvero):
   // Domanda sulle regole in parole normali
   async regola(ws, me, m) {
     const c = await this.get('campagna');
-    const r = await chiamaGemini(this.env, { contents: [{ parts: [{ text: `Domanda di regole di D&D ${c.regole === '3.5' ? '3.5' : '5ª edizione'}: "${testo(m.testo, 400)}". Rispondi in italiano, massimo 80 parole, preciso secondo il regolamento ufficiale (SRD). Solo testo.` }] }], generationConfig: { temperature: 0.1 } });
+    const r = await this.g({ contents: [{ parts: [{ text: `Domanda di regole di D&D ${c.regole === '3.5' ? '3.5' : '5ª edizione'}: "${testo(m.testo, 400)}". Rispondi in italiano, massimo 80 parole, preciso secondo il regolamento ufficiale (SRD). Solo testo.` }] }], generationConfig: { temperature: 0.1 } }, 'regole');
     if (!r.ok) return this.invia(ws, { t: 'regola', testo: 'Non riesco a rispondere ora, riprova tra poco.' });
     const j = await r.json();
     this.invia(ws, { t: 'regola', domanda: testo(m.testo, 400), testo: j.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('').trim() || '' });
