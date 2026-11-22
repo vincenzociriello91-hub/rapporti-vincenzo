@@ -109,13 +109,19 @@ export class Tavolo extends DurableObject {
       px
     };
     const r = await this.g({ contents: [{ parts: [{ text: `Sei il master di una campagna di D&D (${c.ambientazione}). Racconta la serata di gioco appena finita come una pagina di cronaca epica, in italiano, massimo 170 parole, piacevole da leggere ad alta voce e da condividere nel gruppo. Poi dai un titolo all'episodio e scrivi in inglese il prompt (max 60 parole, niente nomi) per un'illustrazione realistica del momento più memorabile.
-Rispondi SOLO JSON: {"titolo":"...","racconto":"...","prompt":"..."}
+Scrivi anche, per ogni personaggio, una pagina del suo diario personale in prima persona (massimo 70 parole, con la sua voce e il suo punto di vista sulla serata). Personaggi: ${(await Promise.all(Object.keys(await this.get('membri', {})).map(async id => { const p = await this.get('pg:' + id); return p ? `${id}=${p.nome} (${p.razza} ${p.classe})` : null; }))).filter(Boolean).join('; ')}
+Rispondi SOLO JSON: {"titolo":"...","racconto":"...","prompt":"...","diari":{"<id personaggio>":"pagina di diario"}}
 Memoria della campagna: ${memoria || '(nessuna)'}
 Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('\n')}` }] }], generationConfig: { temperature: 0.8, responseMimeType: 'application/json' } }, 'master');
     if (!r.ok) return this.tutti({ t: 'errore', msg: 'Riepilogo non disponibile ora' });
     const out = leggiJSON((await r.json()).candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '') || {};
     stats.trofei = (await this.statistiche()).trofei;
     const rie = { t: Date.now(), titolo: testo(out.titolo, 100) || `Sessione ${stats.sessione}`, racconto: testo(out.racconto, 1800), stats, img: null };
+    for (const [id, pagina] of Object.entries(out.diari && typeof out.diari === 'object' ? out.diari : {})) {
+      const p = await this.get('pg:' + id); if (!p || !pagina) continue;
+      p.diario = [...(p.diario || []), { t: rie.t, sessione: stats.sessione, titolo: rie.titolo, testo: testo(pagina, 700) }].slice(-30);
+      await this.put('pg:' + id, p); this.tutti({ t: 'scheda', per: id, pg: p });
+    }
     rie.img = out.prompt ? await this.illustra(testo(out.prompt, 600), rie.titolo, true) : null;
     const elenco = await this.get('riepiloghi', []); elenco.push(rie); await this.put('riepiloghi', elenco.slice(-30));
     const d = await this.get('diario', []); d.push({ t: rie.t, tipo: 'riepilogo', testo: rie.titolo, chi: 'master', riepilogo: rie.t }); while (d.length > 400) d.shift(); await this.put('diario', d);
@@ -206,11 +212,38 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
     const d = (dopo.pf || 0) - (prima.pf || 0);
     await this.conta(id, d < 0 ? { danniSubiti: -d, ...(prima.pf > 0 && dopo.pf <= 0 ? { cadute: 1 } : {}) } : { cure: d });
   }
+  // storia e famiglia del personaggio scritte con il master (dalle risposte del giocatore)
+  async storia(io, m) {
+    const pg = await this.get('pg:' + io); if (!pg) return;
+    const campi = { origini: testo(m.origini, 200), famiglia: testo(m.famiglia, 300), segno: testo(m.segno, 150), sogno: testo(m.sogno, 150) };
+    pg.famiglia = campi;
+    const c = await this.get('campagna');
+    const r = await this.g({ contents: [{ parts: [{ text: `Scrivi in italiano la storia di ${pg.nome}, ${pg.razza} ${pg.classe} in una campagna di D&D (${c.ambientazione}), in terza persona, massimo 120 parole, con un aggancio per l'avventura. Origini: ${campi.origini || '?'}. Famiglia (albero genealogico): ${campi.famiglia || '?'}. Segno particolare: ${campi.segno || '?'}. Cosa sogna o teme: ${campi.sogno || '?'}. Rispondi solo con il testo.` }] }], generationConfig: { temperature: 0.9 } }, 'regole');
+    if (r.ok) pg.storia = testo((await r.json()).candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '', 1200).trim() || pg.storia;
+    await this.put('pg:' + io, pg);
+    this.tutti({ t: 'scheda', per: io, pg });
+  }
+  // un personaggio caduto va nel memoriale con le sue imprese; il giocatore può creare un erede
+  async caduto(chi, motivo) {
+    const pg = await this.get('pg:' + chi); if (!pg) return;
+    const diario = await this.get('diario', []), nome = pg.nome || '';
+    const imprese = diario.filter(d => d.testo?.includes(nome.split(' ')[0]) && ['narrazione', 'combattimento', 'scheda'].includes(d.tipo)).slice(-5).map(d => testo(d.testo, 160));
+    const eredita = (pg.equip || []).find(e => e.indossato) || (pg.equip || [])[0] || null;
+    const mem = await this.get('memoriale', []);
+    mem.push({ chi, nome, razza: pg.razza, classe: pg.classe, livello: pg.livello, t: Date.now(), motivo, imprese, eredita: eredita ? { nome: eredita.nome } : null, cognome: nome.split(' ').slice(1).join(' ') || nome });
+    await this.put('memoriale', mem.slice(-30));
+    await this.ctx.storage.delete('pg:' + chi);
+    const ev = await this.diario('sistema', `${nome} è caduto${motivo ? ': ' + motivo : ''}. Il suo nome resta nel memoriale.`);
+    this.tutti({ t: 'diario', ev }); this.tutti({ t: 'memoriale', memoriale: mem.slice(-30), caduto: chi });
+    this.tutti({ t: 'suono', nome: 'sconfitta' });
+  }
   async statistiche() {
     const st = await this.get('statistiche', { s: {}, t: {} }), membri = await this.get('membri', {}), nomi = {};
     for (const id of Object.keys(membri)) nomi[id] = (await this.get('pg:' + id))?.nome || membri[id].nome;
     nomi.gruppo = 'Il gruppo';
-    return { sessione: st.sessione, s: st.s, tot: st.t, nomi, trofei: trofei(st.s, nomi) }; // "tot": "t" è il tipo del messaggio
+    const premio = (campo, titolo, fmt) => { const [id, v] = Object.entries(st.t || {}).filter(([k]) => k !== 'gruppo').sort((a, b) => (b[1][campo] || 0) - (a[1][campo] || 0))[0] || []; return v?.[campo] ? { titolo, chi: nomi[id] || '?', motivo: fmt(v[campo]) } : null; };
+    const premi = [premio('fallimenti', 'Re degli 1 naturali', n => `${n} uno naturali`), premio('critici', 'Baciato dalla fortuna', n => `${n} venti naturali`), premio('danniSubiti', 'Spugna del gruppo', n => `${n} danni presi`), premio('danniFatti', 'Mano pesante', n => `${n} danni inflitti`), premio('cure', 'Angelo custode', n => `${n} punti ferita curati`), premio('speso', 'Mani bucate', n => `${n} monete spese`), premio('tiri', 'Lanciadadi compulsivo', n => `${n} tiri`), premio('cadute', 'Abbonato al pavimento', n => `${n} volte a terra`)].filter(Boolean);
+    return { sessione: st.sessione, s: st.s, tot: st.t, nomi, trofei: trofei(st.s, nomi), premi }; // "tot": "t" è il tipo del messaggio
   }
 
   // ---------- negozi: il gruppo compra e vende con le monete della scheda ----------
@@ -378,6 +411,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
       mondo: await this.get('mondo', { fazioni: {}, valute: {}, viaggi: [], notizie: [] }), relazioni: await this.get('relazioni', {}),
       combattimento: await this.get('combattimento', null), aree: await this.get('aree', []), gruppo: await this.get('gruppo', { oro: 0, oggetti: [] }),
       mostri: await this.get('mostri', {}), volti: await this.get('volti', {}), negozio: await this.get('negozio', null),
+      png: await this.get('png', {}), memoriale: await this.get('memoriale', []),
       avventura: vedeSegreti ? await this.avventuraPerMaster() : undefined,
       memoria: vedeSegreti ? memoria : undefined, suggerimenti: vedeSegreti ? suggerimenti.slice(-30) : undefined,
       costi: vedeSegreti ? await this.get('costi', null) : undefined
@@ -412,6 +446,8 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
         case 'chat': { const ev = await this.diario('chat', m.testo, io); this.tutti({ t: 'diario', ev }); if (m.alMaster) await this.programmaMaster(true); return; }
         case 'parlato': return this.parlato(io, me, m);
         case 'comando': { const ev = await this.diario('comando', `${me.nome}: ${testo(m.testo, 300)}`, io); return this.tutti({ t: 'diario', ev }); }
+        case 'storia': return this.storia(io, m);
+        case 'caduto': { const chi = capo && m.pg ? String(m.pg) : io; return this.caduto(chi, testo(m.motivo, 200)); }
         case 'suono': if (!capo || !SUONI.includes(m.nome)) return; return this.tutti({ t: 'suono', nome: m.nome }); // tavola dei suoni del master
         case 'narra': if (!capo) return; { const ev = await this.diario('narrazione', m.testo, io); return this.tutti({ t: 'narra', testo: ev.testo, png: testo(m.png, 40), chi: io }); }
         case 'rtc': return this.rtc(io, m);
@@ -479,11 +515,15 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     const io = this.membroDi(ws);
     try { ws.serializeAttachment({ membro: null }); } catch {}
     if (io) this.tutti({ t: 'presenza', online: this.online(), uscito: io });
+    if (io) this.ctx.waitUntil((async () => { const mm = await this.get('membri', {}); if (mm[io]) { mm[io].visto = Date.now(); await this.put('membri', mm); } })()); // per il riassunto di chi ritorna
   }
 
   async accetta(ws, id, membri, extra = {}) {
     ws.serializeAttachment({ membro: id });
     this.invia(ws, { t: 'benvenuto', io: id, ...extra, stato: await this.statoCompleto(id) });
+    const visto = membri[id].visto || membri[id].dal || 0, persi = (await this.get('riepiloghi', [])).filter(r => r.t > visto);
+    if (persi.length && visto) this.invia(ws, { t: 'bentornato', riepiloghi: persi.slice(-3) });
+    membri[id].visto = Date.now(); await this.put('membri', membri);
     this.tutti({ t: 'presenza', online: this.online(), entrato: id, membro: { nome: membri[id].nome, ruolo: membri[id].ruolo, colore: membri[id].colore, admin: !!membri[id].admin } });
   }
 
@@ -847,7 +887,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     for (const [id, mm] of Object.entries(membri)) {
       if (mm.ruolo !== 'giocatore') continue;
       const p = await this.get('pg:' + id);
-      if (p) pgs.push({ id, giocatore: mm.nome, nome: p.nome, razza: p.razza, classe: p.classe, livello: p.livello, pf: `${p.pf}/${p.pfMax}`, ca: p.ca, caratteristiche: p.car, condizioni: p.condizioni || [], equipaggiato: (p.equip || []).filter(e => e.indossato).map(e => e.nome + (e.bonus ? ' +' + e.bonus : '')), oro: p.oro, classi: p.classi, talenti: p.talenti, incantesimi: (p.incantesimi || []).map(i => i.nome), aspetto: p.aspetto ? { altezza: p.aspetto.altezza, peso: p.aspetto.peso, corporatura: p.aspetto.corporatura } : undefined });
+      if (p) pgs.push({ id, giocatore: mm.nome, nome: p.nome, storia: p.storia ? p.storia.slice(0, 400) : undefined, razza: p.razza, classe: p.classe, livello: p.livello, pf: `${p.pf}/${p.pfMax}`, ca: p.ca, caratteristiche: p.car, condizioni: p.condizioni || [], equipaggiato: (p.equip || []).filter(e => e.indossato).map(e => e.nome + (e.bonus ? ' +' + e.bonus : '')), oro: p.oro, classi: p.classi, talenti: p.talenti, incantesimi: (p.incantesimi || []).map(i => i.nome), aspetto: p.aspetto ? { altezza: p.aspetto.altezza, peso: p.aspetto.peso, corporatura: p.aspetto.corporatura } : undefined });
       else pgs.push({ id, giocatore: mm.nome, nome: '(scheda non ancora creata)' });
     }
     return { c, pgs, diario: diario.slice(-40), memoria, luogo, luoghi };
@@ -881,6 +921,8 @@ Eventi possibili (solo se accadono davvero):
 {"tipo":"illustra","prompt":"English description of the scene for a realistic image, max 60 words, no names","didascalia":"didascalia italiana breve"} (solo nei momenti davvero memorabili: un mostro che appare, un colpo di scena, un luogo spettacolare; al massimo una volta ogni tanto)
 {"tipo":"negozio","nome":"Bottega di Bruna","merci":[{"nome":"Pozione di guarigione","prezzo":50}]} (apre il banco di un mercante: i giocatori comprano e vendono dall'app con le loro monete; prezzi in monete d'oro; {"tipo":"negozio","chiudi":true} quando escono)
 {"tipo":"tiro","pg":"<id>","prova":"Percezione","cd":15}
+{"tipo":"png_nota","nome":"Oste Bruno","nota":"cosa si scopre di lui, max 15 parole"} (per la galleria dei PNG: aspetto, carattere, segreti scoperti dal gruppo; solo cose che il gruppo sa davvero)
+{"tipo":"morte","pg":"<id>","motivo":"..."} (solo quando un personaggio muore davvero secondo le regole: va nel memoriale e il giocatore potrà creare un erede)
 {"tipo":"suono","nome":"porta|colpo|magia|monete|pozione|vittoria|sconfitta|raro|ferito|successo"} (effetto sonoro su tutti i telefoni, nei momenti giusti: una porta che si apre, un colpo, un incantesimo, monete, una vittoria)
 {"tipo":"nemico","nome":"Goblin","x":n,"y":n,"pf":7,"ca":15} (segnalino sulla mappa, griglia ${W}x${H})
 {"tipo":"combattimento","azione":"inizia|prossimo|fine"} (inizia quando scoppia uno scontro: l'app tira l'iniziativa e gestisce i turni; "prossimo" quando un PNG o nemico ha finito il suo turno; "fine" quando lo scontro è finito)
@@ -924,7 +966,7 @@ AVVENTURA PRONTA "${AVVENTURE[avv.id].titolo}": seguila (trovi scene, segreti e 
     const nomePng = testo(out.png, 40).trim();
     if (narr && nomePng) { // memoria dei PNG: lo stesso personaggio non cambia nome tra un turno e l'altro
       const png = await this.get('png', {});
-      png[nomePng] = { luogo: luogo?.nome || png[nomePng]?.luogo || null, t: Date.now() };
+      png[nomePng] = { ...png[nomePng], luogo: png[nomePng]?.luogo || luogo?.nome || null, t: Date.now(), prima: png[nomePng]?.prima || Date.now() };
       const nomi = Object.keys(png).sort((a, b) => png[b].t - png[a].t).slice(0, 40); // shortcut: solo gli ultimi 40, la memoria lunga li riassume
       await this.put('png', Object.fromEntries(nomi.map(n => [n, png[n]])));
     }
@@ -959,6 +1001,8 @@ AVVENTURA PRONTA "${AVVENTURE[avv.id].titolo}": seguila (trovi scene, segreti e 
       case 'avventura': return this.scenaAvventura(e.scena);
       case 'negozio': if (e.chiudi) { await this.put('negozio', null); return this.tutti({ t: 'negozio', negozio: null }); } return this.apriNegozio(e);
       case 'suono': if (SUONI.includes(e.nome)) this.tutti({ t: 'suono', nome: e.nome }); return;
+      case 'png_nota': { const png = await this.get('png', {}), n = testo(e.nome, 40); if (!n || !e.nota) return; png[n] = { ...png[n], luogo: png[n]?.luogo || null, t: png[n]?.t || Date.now(), note: [...(png[n]?.note || []), testo(e.nota, 120)].slice(-6) }; await this.put('png', png); return this.tutti({ t: 'png', png }); }
+      case 'morte': return this.caduto(String(e.pg || ''), testo(e.motivo, 200));
       case 'illustra': this.ctx.waitUntil(e.prompt ? this.illustra(testo(e.prompt, 600), testo(e.didascalia, 200)) : this.illustraScena()); return;
       case 'tiro': { const p = await this.get('pg:' + e.pg); this.tutti({ t: 'richiesta_tiro', pg: e.pg, prova: testo(e.prova, 40), cd: e.cd | 0, nome: p?.nome }); return; }
       case 'reputazione': case 'fazione': {
