@@ -20,6 +20,8 @@ const RARI = [{ nome: 'Pozione di guarigione superiore', prezzo: 150 }, { nome: 
 const SEGRETI = ['Sei in cerca di un fratello scomparso: chiedi di lui a ogni PNG importante.', 'Devi una grossa somma a un usuraio: metti da parte 200 monete senza dirlo agli altri.', 'Sei stato cacciato dalla tua gilda: riconquista il loro rispetto con un\'impresa.', 'Hai giurato di proteggere un compagno del gruppo, anche a costo della vita.', 'Colleziona un trofeo da ogni nemico importante sconfitto.', 'Un antico spirito ti parla in sogno: segui i suoi segni.', 'Vuoi diventare famoso: fai in modo che il tuo nome arrivi in ogni città.', 'Cerchi la spada di tuo nonno, perduta in un dungeon della regione.'];
 // il testo da leggere ad alta voce: via le indicazioni di regia "*(tono epico)*", asterischi e titoli markdown
 export function senzaRegia(t) { return String(t ?? '').replace(/\*?\((?:tono|voce|con tono|musica|pausa|sottofondo)[^)]*\)\*?/gi, '').replace(/[*_#`]+/g, '').replace(/[ \t]{2,}/g, ' ').trim(); }
+const TIPI_EVENTO = ['avventura', 'bottino', 'combattimento', 'compagno', 'condizione', 'cura', 'danno', 'danno_nemico', 'edificio', 'enigma', 'esperienza', 'fazione', 'illustra', 'luogo', 'minaccia', 'minaccia_sventata', 'missione', 'missione_fatta', 'morte', 'negozio', 'nemesi', 'nemesi_fuga', 'nemico', 'oggetto', 'oro', 'png', 'png_nota', 'reputazione', 'reputazione_luogo', 'scelta', 'scena', 'segreto_fatto', 'sfida_persa', 'sfida_vinta', 'sogno', 'suono', 'tempo', 'tiro', 'valuta', 'valuta_pg', 'voto']; // gli eventi che il master AI può usare (quelli di applicaEvento)
+const SILENZIO = 4 * 60000; // dopo quanti minuti di silenzio il master AI fa succedere qualcosa
 const REAZIONI = ['👏', '😂', '😱', '🔥', '❤️', '🎲'];
 const LINGUE = { it: 'italiano', en: 'inglese', es: 'spagnolo', fr: 'francese', de: 'tedesco' };
 const SUONI = ['porta', 'colpo', 'magia', 'monete', 'pozione', 'vittoria', 'sconfitta', 'raro', 'ferito', 'successo', 'critico', 'livello', 'tocco', 'tuono'];
@@ -187,7 +189,7 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
     (this.inCorso = this.inCorso || new Set()).add('v:' + nome);
     try {
       const diario = await this.get('diario', []), recenti = diario.filter(d => d.tipo === 'narrazione').slice(-2).map(d => d.testo).join('\n');
-      const r = await this.g({ contents: [{ parts: [{ text: `Describe in English, max 40 words, the face and look of the D&D character "${nome}" for a portrait painting (age, race, hair, clothes, expression), consistent with this scene:\n${recenti}\nOnly the description.` }] }], generationConfig: { temperature: 0.7 } }, 'interni');
+      const r = await this.g({ contents: [{ parts: [{ text: `Describe in English, max 40 words, the face and look of the D&D character "${nome}" for a portrait painting (age, race, hair, clothes, expression), consistent with this scene:\n${recenti}\nOnly the description.` }] }], generationConfig: { temperature: 0.7 } }, 'racconto');
       const desc = r.ok ? ((await r.json()).candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '').trim().slice(0, 400) : '';
       const id = await this.immagineSalvata(`realistic fantasy portrait painting, head and shoulders, ${desc || nome}, Dungeons and Dragons character, dramatic warm lighting, highly detailed face, painterly realism, dark background, no text`, 'quotaVolti', 25);
       if (!id) return;
@@ -240,6 +242,33 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
     const d = (dopo.pf || 0) - (prima.pf || 0);
     await this.conta(id, d < 0 ? { danniSubiti: -d, ...(prima.pf > 0 && dopo.pf <= 0 ? { cadute: 1 } : {}) } : { cure: d });
   }
+  // ---------- manuale di esperienza del master (come il bot di Minecraft: impara dagli errori, mai due volte lo stesso) ----------
+  async manuale(azione, dati = {}) {
+    try { const r = await this.env.TAVOLO.get(this.env.TAVOLO.idFromName('__MANUALE__')).fetch('https://tavolo/interno', { method: 'POST', headers: { 'x-tavolo-interno': '1' }, body: JSON.stringify({ azione, ...dati }) }); return await r.json(); } catch { return null; }
+  }
+  async lezioniMaster() {
+    if (this.cacheManuale && Date.now() - this.cacheManuale.t < 600000) return this.cacheManuale.lezioni;
+    const man = await this.manuale('manuale_leggi'); const lezioni = (man?.lezioni || []).slice(0, 15).map(l => l.testo);
+    this.cacheManuale = { t: Date.now(), lezioni }; return lezioni;
+  }
+  async impara(lezioni, problemi) { if (lezioni?.length || problemi?.length) await this.manuale('manuale_aggiungi', { lezioni, problemi, da: (await this.get('campagna'))?.prova ? 'partita bot' : 'partita' }); }
+  // dagli ultimi eventi: cosa può fare meglio il master in generale (lezioni valide per tutte le campagne)
+  async estraiLezioni(diario) {
+    const r = await this.g({ contents: [{ parts: [{ text: `Sei l'allenatore di un master AI di D&D. Dagli eventi di una partita estrai da 0 a 3 lezioni GENERALI per fare meglio il master la prossima volta: regole applicate male, giocatori che correggono il master o si lamentano, momenti confusi o noiosi, PNG che cambiano nome, eventi rifiutati dall'app. Niente nomi di questa campagna. Se non c'è niente da imparare rispondi con un elenco vuoto.\\nEventi:\\n${diario.slice(-60).map(d => `[${d.tipo}] ${d.testo}`).join('\\n').slice(0, 9000)}\\nRispondi SOLO JSON: {"lezioni":["..."]}` }] }], generationConfig: { temperature: 0.3, responseMimeType: 'application/json' } }, 'memoria');
+    if (!r.ok) return; const out = leggiJSON((await r.json()).candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '');
+    await this.impara((out?.lezioni || []).filter(x => typeof x === 'string').slice(0, 3), []);
+  }
+  // master proattivo: se il tavolo tace da qualche minuto fa succedere qualcosa (al massimo due volte di fila)
+  async controllaSilenzio() {
+    const c = await this.get('campagna'); if (c?.masterTipo !== 'ai') return;
+    const membri = await this.get('membri', {}), online = this.online().filter(x => membri[x]?.ruolo === 'giocatore');
+    if (!online.length) return;
+    const diario = await this.get('diario', []), ultimo = diario[diario.length - 1]?.t || 0;
+    const dopoGiocatori = diario.slice(diario.map(d => d.chi !== 'master' && ['chat', 'parlato', 'dado', 'comando'].includes(d.tipo)).lastIndexOf(true) + 1).filter(d => d.tipo === 'narrazione' && d.silenzio).length;
+    if (Date.now() - ultimo >= SILENZIO && dopoGiocatori < 2 && !(await this.get('masterInAttesa', false))) { this.silenzio = true; await this.programmaMaster(true); return; }
+    await this.prossimoControllo();
+  }
+  async prossimoControllo() { const a = await this.ctx.storage.getAlarm(); if (!a) await this.ctx.storage.setAlarm(Date.now() + SILENZIO); }
   // ---------- serate, traduzioni, note sulla mappa, giochi di taverna ----------
   // calendario delle serate: il master propone, ognuno risponde ci sono / non ci sono (il promemoria lo mette il calendario del telefono)
   async serata(io, me, capo, m) {
@@ -454,7 +483,7 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
     const membri = await this.get('membri', {}), pgs = [];
     for (const id of Object.keys(membri)) { const p = await this.get('pg:' + id); if (p && membri[id].ruolo === 'giocatore') pgs.push(p); }
     const luogo = await this.get('luogo:' + await this.get('luogoAttuale'));
-    const chiedi = async (testoP) => { const r = await this.g({ contents: [{ parts: [{ text: testoP }] }], generationConfig: { temperature: 0.9, responseMimeType: 'application/json' } }, 'interni'); return r.ok ? leggiJSON((await r.json()).candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '') : null; };
+    const chiedi = async (testoP) => { const r = await this.g({ contents: [{ parts: [{ text: testoP }] }], generationConfig: { temperature: 0.9, responseMimeType: 'application/json' } }, 'racconto'); return r.ok ? leggiJSON((await r.json()).candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '') : null; };
     if (m.tipo === 'png') {
       const ai = await chiedi(`Inventa un personaggio non giocante per una campagna di D&D, in italiano, adatto a: ${luogo?.nome || 'un villaggio'} (${luogo?.tipo || ''}). Rispondi SOLO JSON {"nome":"...","razza":"...","mestiere":"...","aspetto":"una frase","tratto":"modo di fare","segreto":"un segreto","battuta":"prima frase che dice"}`);
       return ai?.nome ? ai : pngCasuale();
@@ -525,6 +554,16 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
   // ---------- connettore per Claude: lettura dello stato e preparazione delle sessioni ----------
   async interno(m) {
     const ris = o => new Response(JSON.stringify(o), { headers: { 'Content-Type': 'application/json' } });
+    if (m.azione === 'manuale_leggi') return ris(await this.get('manuale', { lezioni: [], problemi: [] }));
+    if (m.azione === 'manuale_aggiungi') {
+      const man = await this.get('manuale', { lezioni: [], problemi: [] }), chiave = t => t.toLowerCase().replace(/[^a-zà-ù0-9 ]/g, '').slice(0, 70);
+      for (const [lista, voci, max] of [[man.lezioni, m.lezioni, 200], [man.problemi, m.problemi, 300]]) for (const v of (Array.isArray(voci) ? voci : []).slice(0, 5)) {
+        const t = testo(v, max).trim(); if (t.length < 8) continue;
+        const es = lista.find(x => chiave(x.testo) === chiave(t)); if (es) { es.volte++; es.t = Date.now(); } else lista.push({ testo: t, volte: 1, t: Date.now(), da: testo(m.da, 40) });
+      }
+      man.lezioni = man.lezioni.sort((a, b) => b.volte - a.volte || b.t - a.t).slice(0, 60); man.problemi = man.problemi.sort((a, b) => b.t - a.t).slice(0, 120);
+      await this.put('manuale', man); return ris({ ok: true });
+    }
     const c = await this.get('campagna');
     if (!c) return ris({ errore: 'campagna inesistente' });
     if (m.azione === 'stato') {
@@ -624,6 +663,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
         case 'missione_accetta': return this.missioneAccetta(io, String(m.id || ''));
         case 'reazione': { if (!REAZIONI.includes(m.emoji)) return; const ora = Date.now(); if (ora - (this.reazioni.get(io) || 0) < 1200) return; this.reazioni.set(io, ora); return this.tutti({ t: 'reazione', emoji: m.emoji, nome: me.nome }); }
         case 'traduci': return this.traduci(ws, m);
+        case 'segnala_problema': { const ora = Date.now(); if (ora - (this.ultimoProblema || 0) < 3000) return; this.ultimoProblema = ora; return this.impara([], [testo(m.testo, 300)]); }
         case 'immagine_esterna': {
           const att = this.daDisegnare; if (!att || att.id !== m.id || Date.now() - att.t > 180000 || typeof m.dati !== 'string' || m.dati.length > 380000) return;
           const jpeg = Uint8Array.from(atob(m.dati), c => c.charCodeAt(0)); if (jpeg[0] !== 0xFF || jpeg[1] !== 0xD8) return; // solo JPEG veri
@@ -720,6 +760,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     const visto = membri[id].visto || membri[id].dal || 0, persi = (await this.get('riepiloghi', [])).filter(r => r.t > visto);
     if (persi.length && visto) this.invia(ws, { t: 'bentornato', riepiloghi: persi.slice(-3) });
     membri[id].visto = Date.now(); await this.put('membri', membri);
+    await this.prossimoControllo();
     this.tutti({ t: 'presenza', online: this.online(), entrato: id, membro: { nome: membri[id].nome, ruolo: membri[id].ruolo, colore: membri[id].colore, admin: !!membri[id].admin, presenze: membri[id].presenze || 0 } });
   }
 
@@ -1081,6 +1122,8 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
       try { await this.turnoMaster(); } finally { await this.put('masterOccupato', false); }
     }
     if ((await this.get('daRiassumere', 0)) >= 25) await this.riassumi();
+    if (await this.get('masterInAttesa', false)) return;
+    await this.controllaSilenzio();
   }
 
   async contestoMaster() {
@@ -1167,19 +1210,23 @@ AVVENTURA PRONTA "${AVVENTURE[avv.id].titolo}": seguila (trovi scene, segreti e 
       valute_locali: (await this.get('mondo', {}))?.valute || {},
       relazioni_tra_personaggi: await this.get('relazioni', {}),
       mondo_vivo: await this.mondoVivo(true),
-      png_incontrati: Object.entries(await this.get('png', {})).map(([nome, p]) => ({ nome, luogo: p.luogo })),
+      png_incontrati: Object.entries(await this.get('png', {})).map(([nome, p]) => ({ nome, luogo: p.luogo, legami: p.legami, cosa_ha_fatto_nel_frattempo: p.novita })),
       ultimi_eventi: diario.map(d => `[${d.tipo}] ${d.testo}`)
     };
+    const lezioni = await this.lezioniMaster(), silenzio = this.silenzio; this.silenzio = false;
+    const istrTot = istr + (lezioni.length ? `\nMANUALE DEL MASTER (lezioni imparate in tutte le partite: seguile):\n- ${lezioni.join('\n- ')}` : '') + (silenzio ? '\nIL TAVOLO È IN SILENZIO DA QUALCHE MINUTO: fai succedere qualcosa di piccolo e interessante che inviti i giocatori ad agire (un rumore, un PNG che si avvicina, un dettaglio nuovo). Breve, 2-3 frasi, niente danni e niente combattimenti.' : '');
     const r = await this.g({
-      systemInstruction: { parts: [{ text: istr }] },
+      systemInstruction: { parts: [{ text: istrTot }] },
       contents: [{ role: 'user', parts: [{ text: JSON.stringify(contesto) }] }],
       generationConfig: { temperature: 0.85, responseMimeType: 'application/json' }
     });
     if (!r.ok) { this.tutti({ t: 'errore', msg: r.status === 429 ? 'Il master AI ha finito la quota gratuita di oggi: riprova più tardi o passate al master umano' : `il master AI non risponde (${r.status}), riprova tra poco` }); return; }
     const j = await r.json();
     const out = leggiJSON(j.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '');
-    if (!out) return;
+    if (!out) { await this.impara(['Rispondi sempre e solo con il JSON richiesto (narrazione, png, eventi), senza testo fuori dal JSON.'], []); return; }
     const narr = testo(out.narrazione, 1500).trim();
+    const noti = new Set(TIPI_EVENTO), ignoti = (Array.isArray(out.eventi) ? out.eventi : []).map(e => e?.tipo).filter(t => t && !noti.has(t));
+    if (ignoti.length) await this.impara([`Usa solo i tipi di evento dell'elenco: "${[...new Set(ignoti)].slice(0, 3).join('", "')}" non esiste.`], []);
     for (const e of (Array.isArray(out.eventi) ? out.eventi.slice(0, 16) : [])) { try { await this.applicaEvento(e); } catch {} }
     const nomePng = testo(out.png, 40).trim();
     if (narr && nomePng) { // memoria dei PNG: lo stesso personaggio non cambia nome tra un turno e l'altro
@@ -1190,6 +1237,7 @@ AVVENTURA PRONTA "${AVVENTURE[avv.id].titolo}": seguila (trovi scene, segreti e 
     }
     if (narr) {
       const ev = await this.diario('narrazione', narr, 'master');
+      if (silenzio) { const d = await this.get('diario', []); const x = d.find(y => y.t === ev.t && y.testo === ev.testo); if (x) { x.silenzio = true; await this.put('diario', d); } }
       this.tutti({ t: 'narra', testo: ev.testo, png: testo(out.png, 40), chi: 'master', modello: r.modello });
       if (nomePng) this.ctx.waitUntil(this.disegnaVolto(nomePng));
     } else this.tutti({ t: 'master_zitto' });
@@ -1260,12 +1308,17 @@ AVVENTURA PRONTA "${AVVENTURE[avv.id].titolo}": seguila (trovi scene, segreti e 
 Memoria: ${memoria || '(poca)'}
 Luoghi: ${JSON.stringify(luoghi)}
 Fazioni: ${JSON.stringify(mo.fazioni)}
-Rispondi SOLO JSON: {"notizie":"testo di massimo 80 parole da leggere ad alta voce, come un banditore","edifici":[{"luogo":"<id>","edificio":"<id>","stato":"integro|danneggiato|bruciato|distrutto"}],"fazioni":[{"nome":"...","delta":n}]}` }] }], generationConfig: { temperature: 0.7, responseMimeType: 'application/json' } }, 'mondo');
+PNG conosciuti: ${JSON.stringify(Object.entries(await this.get('png', {})).slice(0, 20).map(([nome, p]) => ({ nome, luogo: p.luogo, legami: p.legami })))}
+Per 1-3 PNG importanti decidi cosa hanno fatto nel frattempo e che legami hanno tra loro (amici, rivali, mentore e allievo, parenti, innamorati, nemici).
+Rispondi SOLO JSON: {"png":[{"nome":"...","novita":"una frase","legame":{"con":"altro PNG","tipo":"..."}}],"notizie":"testo di massimo 80 parole da leggere ad alta voce, come un banditore","edifici":[{"luogo":"<id>","edificio":"<id>","stato":"integro|danneggiato|bruciato|distrutto"}],"fazioni":[{"nome":"...","delta":n}]}` }] }], generationConfig: { temperature: 0.7, responseMimeType: 'application/json' } }, 'mondo');
     if (!r.ok) return;
     const out = leggiJSON((await r.json()).candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '');
     if (!out) return;
     for (const e of (out.edifici || []).slice(0, 6)) await this.modificaLuogo('master', {}, true, { luogo: e.luogo, edificio: e.edificio, stato: e.stato });
     for (const f of (out.fazioni || []).slice(0, 4)) await this.applicaEvento({ tipo: 'reputazione', fazione: f.nome, delta: f.delta, motivo: 'tra una sessione e l\'altra' });
+    const png = await this.get('png', {}); let cambiati = 0;
+    for (const v of (Array.isArray(out.png) ? out.png : []).slice(0, 3)) { const p = png[testo(v.nome, 40)]; if (!p) continue; p.novita = testo(v.novita, 200); p.novitaSessione = c.sessione; const con = testo(v.legame?.con, 40), tipo = testo(v.legame?.tipo, 30); if (con && tipo && con !== v.nome) p.legami = [...(p.legami || []).filter(l => l.con !== con), { con, tipo }].slice(-4); cambiati++; }
+    if (cambiati) { await this.put('png', png); this.tutti({ t: 'png', png }); }
     if (out.notizie) {
       const m2 = await this.get('mondo', mo); m2.notizie = [...(m2.notizie || []), { t: Date.now(), sessione: c.sessione, testo: testo(out.notizie, 800) }].slice(-30); await this.put('mondo', m2); this.tutti({ t: 'mondo', mondo: m2 });
       const ev = await this.diario('narrazione', 'Notizie dal mondo: ' + out.notizie, 'master');
@@ -1286,7 +1339,7 @@ Rispondi SOLO JSON: {"notizie":"testo di massimo 80 parole da leggere ad alta vo
       let info = null;
       const domanda = `Ambientazione D&D: ${c.ambientazione}. Descrivi l'interno di "${ed.nome}" nel luogo "${padre.nome}"${ed.stato !== 'integro' ? ' (' + ed.stato + ')' : ''}. Rispondi SOLO JSON: {"descrizione":"massimo 60 parole in italiano, da leggere ad alta voce","stanze":["nome stanza 1", "... fino a 6 nomi brevi in italiano"],"png":"nome e ruolo di chi si trova dentro, o vuoto"}`;
       if (this.env.AI) { try { const o = await this.env.AI.run('@cf/meta/llama-3.1-8b-instruct', { messages: [{ role: 'user', content: domanda }], max_tokens: 400 }); info = leggiJSON(o?.response || ''); if (info) info.da = 'cloudflare'; } catch {} }
-      if (!info) { const r = await this.g({ contents: [{ parts: [{ text: domanda }] }], generationConfig: { temperature: 0.8, responseMimeType: 'application/json' } }, 'interni'); if (r.ok) { info = leggiJSON((await r.json()).candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || ''); if (info) info.da = 'gemini'; } }
+      if (!info) { const r = await this.g({ contents: [{ parts: [{ text: domanda }] }], generationConfig: { temperature: 0.8, responseMimeType: 'application/json' } }, 'racconto'); if (r.ok) { info = leggiJSON((await r.json()).candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || ''); if (info) info.da = 'gemini'; } }
       const stanze = Array.isArray(info?.stanze) && info.stanze.length ? info.stanze.map(x => testo(x, 30)) : ['Ingresso', 'Sala', 'Magazzino', 'Stanza privata', 'Cucina', 'Retro'];
       const l = generaLuogo(nome, tipo, c.creata + ':' + id, stanze);
       l.genitore = pid; l.descrizione = testo(info?.descrizione, 600); l.png = testo(info?.png, 60); l.generatoDa = info?.da || 'nessuna IA';
@@ -1305,6 +1358,7 @@ Rispondi SOLO JSON: {"notizie":"testo di massimo 80 parole da leggere ad alta vo
     const j = await r.json();
     const t = j.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('').trim();
     if (t) { await this.put('memoria', testo(t, 6000)); await this.put('daRiassumere', 0); }
+    await this.estraiLezioni(diario);
   }
 
   async inviaRiassunto(ws) {

@@ -137,6 +137,7 @@ async function turn(req, env) {
 // Connettore "D&D" per Claude (MCP su HTTP): legge le campagne e aiuta a preparare le sessioni.
 // Segreto MCP_CHIAVE: l'indirizzo del connettore è /mcp?chiave=<MCP_CHIAVE>
 const STRUMENTI = [
+  { name: 'manuale_master', description: "Manuale di esperienza del master AI di Tavolo d'Avventura: lezioni imparate in tutte le partite e problemi segnalati dai telefoni e dalla partita bot.", inputSchema: { type: 'object', properties: {} } },
   { name: 'stato_campagna', description: "Stato di una campagna di Tavolo d'Avventura: membri, personaggi, luoghi, memoria del master, fazioni, tesoro, uso dell'AI, suggerimenti.", inputSchema: { type: 'object', properties: { codice: { type: 'string', description: 'Codice della campagna (8 caratteri)' } }, required: ['codice'] } },
   { name: 'diario_campagna', description: 'Ultimi eventi del diario della campagna.', inputSchema: { type: 'object', properties: { codice: { type: 'string' }, n: { type: 'number', description: 'Quanti eventi (max 200)' } }, required: ['codice'] } },
   { name: 'nota_preparazione', description: 'Aggiunge una nota di preparazione alla memoria del master AI (trame, PNG, segreti per la prossima sessione).', inputSchema: { type: 'object', properties: { codice: { type: 'string' }, testo: { type: 'string' } }, required: ['codice', 'testo'] } },
@@ -155,6 +156,7 @@ async function mcp(req, env, url) {
   if (m.method === 'tools/list') return ok({ tools: STRUMENTI });
   if (m.method === 'tools/call') {
     const a = m.params?.arguments || {}, nome = m.params?.name;
+    if (nome === 'manuale_master') { const r = await env.TAVOLO.get(env.TAVOLO.idFromName('__MANUALE__')).fetch('https://tavolo/interno', { method: 'POST', headers: { 'x-tavolo-interno': '1' }, body: JSON.stringify({ azione: 'manuale_leggi' }) }); return ok({ content: [{ type: 'text', text: JSON.stringify(await r.json(), null, 1).slice(0, 60000) }] }); }
     const codice = String(a.codice || '').toUpperCase();
     if (!/^[A-Z0-9]{6,12}$/.test(codice)) return ok({ content: [{ type: 'text', text: 'Codice campagna non valido' }], isError: true });
     const azione = { stato_campagna: 'stato', diario_campagna: 'diario', nota_preparazione: 'nota', prepara_luogo: 'prepara_luogo', imposta_fazione: 'fazione' }[nome];
