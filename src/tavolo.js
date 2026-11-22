@@ -1209,26 +1209,30 @@ export async function generaImmagine(env, prompt, piccola) {
     try { const r = await env.AI.run('@cf/black-forest-labs/flux-1-schnell', { prompt: piccola ? prompt : stile + prompt, steps: piccola ? 4 : 6 }); if (r?.image) return Uint8Array.from(atob(r.image), c => c.charCodeAt(0)); }
     catch (e) { errori.push(String(e.message || e).slice(0, 90)); } // es. 4006: finiti i 10.000 neuroni gratuiti del giorno (condivisi con le altre app)
   }
-  // riserva 1: Hugging Face (chiave HF_TOKEN, crediti gratuiti del mese): più fornitori, il primo che risponde
+  // riserva 1: Hugging Face. Prima lo Space gratuito di FLUX schnell (quota GPU gratuita del tuo account,
+  // come fa KindredNest), poi i fornitori a crediti del router se un giorno ce ne saranno.
   if (env.HF_TOKEN) {
-    const testoHF = (piccola ? '' : stile) + prompt, lato = piccola ? 512 : 768, auth = { Authorization: `Bearer ${env.HF_TOKEN}`, 'Content-Type': 'application/json' };
-    const FORNITORI = [
-      ['nebius', 'https://router.huggingface.co/nebius/v1/images/generations', { model: 'black-forest-labs/flux-schnell', prompt: testoHF, response_format: 'b64_json', width: lato, height: lato }],
-      ['together', 'https://router.huggingface.co/together/v1/images/generations', { model: 'black-forest-labs/FLUX.1-schnell', prompt: testoHF, response_format: 'b64_json', width: lato, height: lato, steps: 4 }],
-      ['fal', 'https://router.huggingface.co/fal-ai/fal-ai/flux/schnell', { prompt: testoHF, image_size: piccola ? 'square' : 'square_hd', num_inference_steps: 4 }],
-      ['hf-sdxl', 'https://router.huggingface.co/hf-inference/models/stabilityai/stable-diffusion-xl-base-1.0', { inputs: testoHF }]
-    ];
-    for (const [nome, url, corpo] of FORNITORI) {
+    const testoHF = (piccola ? '' : stile) + prompt, lato = piccola ? 512 : 768, auth = { Authorization: `Bearer ${env.HF_TOKEN}` };
+    for (const base of ['https://black-forest-labs-flux-1-schnell.hf.space']) {
       try {
-        const r = await fetch(url, { method: 'POST', headers: auth, body: JSON.stringify(corpo), signal: AbortSignal.timeout(60000) });
-        if (!r.ok) { errori.push(`HF ${nome} ${r.status} ${(await r.text()).slice(0, 80)}`); continue; }
-        if (/^image\//.test(r.headers.get('content-type') || '')) return new Uint8Array(await r.arrayBuffer());
-        const j = await r.json(), b64 = j.data?.[0]?.b64_json, link = j.data?.[0]?.url || j.images?.[0]?.url;
-        if (b64) return Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-        if (link) { const im = await fetch(link); if (im.ok) return new Uint8Array(await im.arrayBuffer()); }
-        errori.push(`HF ${nome}: risposta senza immagine`);
-      } catch (e) { errori.push(`HF ${nome} ${String(e.message || e).slice(0, 60)}`); }
+        const avvio = await fetch(base + '/gradio_api/call/infer', { method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify({ data: [testoHF, 0, true, lato, lato, 4] }), signal: AbortSignal.timeout(20000) });
+        if (!avvio.ok) { errori.push(`HF spazio ${avvio.status} ${(await avvio.text()).slice(0, 80)}`); continue; }
+        const evento = (await avvio.json()).event_id;
+        const flusso = await (await fetch(`${base}/gradio_api/call/infer/${evento}`, { headers: auth, signal: AbortSignal.timeout(90000) })).text();
+        const fatto = flusso.split(/\n\n+/).find(b => /^event: complete/m.test(b));
+        if (!fatto) { errori.push('HF spazio: ' + flusso.replace(/\s+/g, ' ').slice(0, 120)); continue; }
+        const ris = JSON.parse(fatto.split('\n').filter(r => r.startsWith('data:')).map(r => r.slice(5)).join(''));
+        const f = Array.isArray(ris) ? ris[0] : null, link = f?.url || (f?.path ? `${base}/gradio_api/file=${f.path}` : null);
+        const im = link && await fetch(link, { headers: auth });
+        if (im?.ok) return new Uint8Array(await im.arrayBuffer());
+        errori.push('HF spazio: immagine non scaricabile');
+      } catch (e) { errori.push('HF spazio ' + String(e.message || e).slice(0, 60)); }
     }
+    try {
+      const r = await fetch('https://router.huggingface.co/fal-ai/fal-ai/flux/schnell', { method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: testoHF, image_size: piccola ? 'square' : 'square_hd', num_inference_steps: 4 }), signal: AbortSignal.timeout(60000) });
+      if (r.ok) { const j = await r.json(), link = j.images?.[0]?.url; const im = link && await fetch(link); if (im?.ok) return new Uint8Array(await im.arrayBuffer()); errori.push('HF fal: risposta senza immagine'); }
+      else errori.push(`HF fal ${r.status}`);
+    } catch (e) { errori.push('HF fal ' + String(e.message || e).slice(0, 60)); }
   }
   // riserva 2: i modelli immagine di Gemini, con la sua quota separata
   for (const modello of env.GEMINI_KEY ? ['gemini-2.5-flash-image', 'gemini-3.1-flash-image'] : []) {
