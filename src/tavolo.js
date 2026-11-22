@@ -1525,6 +1525,11 @@ export async function generaImmagine(env, prompt, piccola) {
   if (env.AI) {
     try { const r = await env.AI.run('@cf/black-forest-labs/flux-1-schnell', { prompt: piccola ? prompt : stile + prompt, steps: piccola ? 4 : 6 }); if (r?.image) return Uint8Array.from(atob(r.image), c => c.charCodeAt(0)); }
     catch (e) { errori.push(String(e.message || e).slice(0, 90)); } // es. 4006: finiti i 10.000 neuroni gratuiti del giorno (condivisi con le altre app)
+    // altri modelli di Cloudflare (rispondono con il PNG già pronto)
+    for (const m of ['@cf/bytedance/stable-diffusion-xl-lightning', '@cf/lykon/dreamshaper-8-lcm']) {
+      try { const r = await env.AI.run(m, { prompt: (piccola ? prompt : stile + prompt).slice(0, 900), num_steps: m.includes('lightning') ? 4 : 8, width: piccola ? 512 : 1024, height: piccola ? 512 : 576 }); const b = r instanceof ReadableStream ? new Uint8Array(await new Response(r).arrayBuffer()) : r instanceof Uint8Array ? r : null; if (b?.length > 1000) return b; errori.push(m.split('/')[2] + ': vuota'); }
+      catch (e) { errori.push(m.split('/')[2] + ': ' + String(e.message || e).slice(0, 60)); }
+    }
   }
   // riserva 1: Hugging Face. Prima lo Space gratuito di FLUX schnell (quota GPU gratuita del tuo account,
   // come fa KindredNest), poi i fornitori a crediti del router se un giorno ce ne saranno.
