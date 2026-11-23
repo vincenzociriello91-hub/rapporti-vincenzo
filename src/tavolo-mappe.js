@@ -141,6 +141,22 @@ export function generaLuogo(nome, tipo, seme, nomiInterni) {
 
 // Oggetti di scena (persistenti): strutturali (fissi) o movibili. Tavoli e letti passano dalle caselle agli oggetti.
 // ---------- griglia: passaggi, percorsi e linea di vista (le stesse regole stanno in mappa.js) ----------
+// caselle coperte da un'area d'incantesimo: stesse regole dell'app (mappa.js, celleArea)
+export function celleArea(a, l) {
+  const out = [];
+  for (let y = 0; y < l.h; y++) for (let x = 0; x < l.w; x++) {
+    const dx = x - a.x, dy = y - a.y; let dentro = false;
+    if (a.forma === 'cerchio') dentro = dx * dx + dy * dy <= a.dim * a.dim;
+    else if (a.forma === 'quadrato') dentro = dx >= 0 && dy >= 0 && dx < a.dim && dy < a.dim;
+    else {
+      const [ax, ay] = { n: [0, -1], s: [0, 1], e: [1, 0], o: [-1, 0] }[a.dir || 'e'];
+      const lungo = dx * ax + dy * ay, lato = Math.abs(dx * ay - dy * ax);
+      dentro = a.forma === 'linea' ? lungo >= 1 && lungo <= a.dim && lato === 0 : lungo >= 1 && lungo <= a.dim && lato <= Math.floor(lungo / 2);
+    }
+    if (dentro) out.push([x, y]);
+  }
+  return out;
+}
 export const ARREDI_V = 3;
 export const PASSABILI = ['tappeto', 'ragnatela', 'ossa', 'funghi', 'macerie', 'torcia', 'candelabro'];
 export const DUE_CASELLE = ['letto', 'carretto', 'tronco', 'bancarella', 'barca'];

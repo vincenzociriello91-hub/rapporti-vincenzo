@@ -5,7 +5,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { codiceCasuale, sha, testo } from './tavolo-util.js';
 import { COMPAGNI_ANIMALI, STANZE_BASE, MESTIERI, RICETTE, SEGRETI, senzaRegia, TIPI_EVENTO, TATTICHE, RISERVA, PROMEMORIA, b64url, COPIA, PER_SPETTATORI, SILENZIO, REAZIONI, LINGUE, SUONI, ATTESA_MASTER, SCENE_EN, COMPAGNI, AVVENTURE, trofei, CATALOGHI, tipoNegozio, prezzoBase, SOGLIE_PX, incontroCasuale, tesoroCasuale, pngCasuale, UMANOIDI, nomeMostro, stagione, tiraFormula, RARI } from './tavolo-dati.js';
 import { chiamaGemini, sintesiVocale, STILE_IMG, generaImmagine, chiamaClaude, leggiJSON } from './tavolo-ai.js';
-import { chiaveLuogo, indovinaTipo, W, H, generaLuogo, ARREDI_V, griglia, vicine, percorso, vede, MOVIBILI } from './tavolo-mappe.js';
+import { chiaveLuogo, indovinaTipo, W, H, generaLuogo, ARREDI_V, griglia, vicine, percorso, vede, MOVIBILI, celleArea } from './tavolo-mappe.js';
 export * from './tavolo-util.js';
 export * from './tavolo-dati.js';
 export * from './tavolo-ai.js';
@@ -336,6 +336,20 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
     this.invia(ws, { t: 'traduzione', id: m.id, testo: out });
   }
   // annotazioni dei giocatori sulla mappa del luogo (restano con il luogo)
+  // lavagna: tratti a mano libera sulla mappa del luogo, in decimi di casella; ognuno toglie i suoi, il master tutti
+  async disegno(io, me, capo, m) {
+    const lid = await this.get('luogoAttuale'), luogo = lid && await this.get('luogo:' + lid); if (!luogo) return;
+    let l = await this.get('disegni:' + lid, []);
+    if (m.togli === 'tutti') l = capo ? [] : l.filter(d => d.chi !== io);
+    else if (m.togli === 'ultimo') { const i = l.map(d => d.chi).lastIndexOf(io); if (i >= 0) l.splice(i, 1); }
+    else {
+      const punti = Array.isArray(m.punti) ? m.punti.slice(0, 160).map(p => [Math.max(0, Math.min(luogo.w * 10, Math.round(Number(p?.[0]) || 0))), Math.max(0, Math.min(luogo.h * 10, Math.round(Number(p?.[1]) || 0)))]) : [];
+      if (punti.length < 2) return;
+      l.push({ id: 'd' + Date.now().toString(36), chi: io, colore: /^#[0-9a-f]{6}$/i.test(m.colore || '') ? m.colore : me.colore || '#e8b04b', punti });
+      l = l.slice(-40);
+    }
+    await this.put('disegni:' + lid, l); this.tutti({ t: 'disegni', luogo: lid, disegni: l });
+  }
   async notaMappa(io, me, m) {
     const lid = await this.get('luogoAttuale'), luogo = lid && await this.get('luogo:' + lid); if (!luogo) return;
     let l = await this.get('note:' + lid, []);
@@ -563,7 +577,7 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
     let k = 0;
     for (const mo of mostri.slice(0, 6)) for (let i = 0; i < Math.min(8, mo.numero || 1); i++) {
       let fatto = false;
-      for (let r = 4; r < 12 && !fatto; r++) for (let t = 0; t < 24 && !fatto; t++) { const a = (k * 1.7 + t) * 0.5, x = cx + Math.round(Math.cos(a) * r), y = cy + Math.round(Math.sin(a) * r * 0.7); if (libera(x, y)) { const nome = (mo.numero || 1) > 1 ? `${testo(mo.nome, 24)} ${i + 1}` : testo(mo.nome, 30); seg['n_' + Date.now().toString(36) + k] = { x, y, nome, colore: '#d84b3c', tipo: 'nemico', pf: Number(mo.pf) || 10, ca: Number(mo.ca) || 12 }; fatto = true; k++; } }
+      for (let r = 4; r < 12 && !fatto; r++) for (let t = 0; t < 24 && !fatto; t++) { const a = (k * 1.7 + t) * 0.5, x = cx + Math.round(Math.cos(a) * r), y = cy + Math.round(Math.sin(a) * r * 0.7); if (libera(x, y)) { const nome = (mo.numero || 1) > 1 ? `${testo(mo.nome, 24)} ${i + 1}` : testo(mo.nome, 30); seg['n_' + Date.now().toString(36) + k] = { x, y, nome, colore: '#d84b3c', tipo: 'nemico', pf: Number(mo.pf) || 10, pfMax: Number(mo.pf) || 10, ca: Number(mo.ca) || 12 }; fatto = true; k++; } }
     }
     await this.put('segnalini', seg); this.tutti({ t: 'segnalini', segnalini: seg });
     for (const mo of mostri.slice(0, 6)) this.ctx.waitUntil(this.disegnaMostro(mo.nome));
@@ -685,7 +699,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
       mondo: await this.get('mondo', { fazioni: {}, valute: {}, viaggi: [], notizie: [] }), relazioni: await this.get('relazioni', {}),
       combattimento: await this.combattimentoValido(), aree: await this.get('aree', []), gruppo: await this.get('gruppo', { oro: 0, oggetti: [] }),
       mostri: await this.get('mostri', {}), volti: await this.get('volti', {}), negozio: await this.get('negozio', null),
-      png: await this.get('png', {}), memoriale: await this.get('memoriale', []), ...(await this.mondoVivo(vedeSegreti)), serate: await this.get('serate', []), giocoTaverna: await this.get('giocoTaverna', null), noteMappa: { luogo: await this.get('luogoAttuale'), note: await this.get('note:' + await this.get('luogoAttuale'), []) }, avventure: Object.entries(AVVENTURE).map(([id, a]) => ({ id, titolo: a.titolo, livelli: a.livelli, tipo: a.tipo, seguito: a.seguito })),
+      png: await this.get('png', {}), memoriale: await this.get('memoriale', []), ...(await this.mondoVivo(vedeSegreti)), serate: await this.get('serate', []), giocoTaverna: await this.get('giocoTaverna', null), noteMappa: { luogo: await this.get('luogoAttuale'), note: await this.get('note:' + await this.get('luogoAttuale'), []) }, disegni: { luogo: attuale, disegni: await this.get('disegni:' + attuale, []) }, avventure: Object.entries(AVVENTURE).map(([id, a]) => ({ id, titolo: a.titolo, livelli: a.livelli, tipo: a.tipo, seguito: a.seguito })),
       avventura: vedeSegreti ? await this.avventuraPerMaster() : undefined,
       memoria: vedeSegreti ? memoria : undefined, suggerimenti: vedeSegreti ? suggerimenti.slice(-30) : undefined,
       costi: vedeSegreti ? await this.get('costi', null) : undefined
@@ -741,6 +755,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
           return this.tutti({ t: chiave, [chiave]: mappa });
         }
         case 'nota_mappa': if (me.ruolo === 'spettatore') return; return this.notaMappa(io, me, m);
+        case 'disegno': if (me.ruolo === 'spettatore') return; return this.disegno(io, me, capo, m);
         case 'gioco_apri': case 'gioco_entra': case 'gioco_via': case 'gioco_annulla': if (me.ruolo === 'spettatore') return; return this.giocoTaverna(io, me, capo, m);
         case 'serata_nuova': case 'serata_risposta': case 'serata_togli': return this.serata(io, me, capo, m);
         case 'push_chiave': return this.invia(ws, { t: 'push_chiave', pub: (await this.manuale('vapid'))?.pub || null });
@@ -911,6 +926,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
       if (m.ambientazione) c.ambientazione = testo(m.ambientazione, 400);
       if (m.nome) c.nome = testo(m.nome, 60);
       if (m.masterTipo) c.masterTipo = m.masterTipo === 'umano' ? 'umano' : 'ai';
+      if (m.timerTurno !== undefined) c.timerTurno = [30, 60, 90, 120].includes(Number(m.timerTurno)) ? Number(m.timerTurno) : 0; // clessidra del turno, in secondi (0 = spenta)
       if (m.nuovaSessione) { c.sessione = (c.sessione || 1) + 1; c.invito = codiceCasuale(8); c.invitoSpettatori = codiceCasuale(10); await this.diario('sistema', `Inizia la sessione ${c.sessione}.`); this.ctx.waitUntil(this.evolviMondo(false)); await this.minacceCrescono(); for (const x of this.online()) if (membri[x] && membri[x].sessioneVista !== c.sessione) { membri[x].presenze = (membri[x].presenze || 0) + 1; membri[x].sessioneVista = c.sessione; } await this.put('membri', membri); }
       if (m.ruoli && me.admin) for (const [id, r] of Object.entries(m.ruoli)) if (membri[id] && ['giocatore', 'spettatore', 'master'].includes(r)) membri[id].ruolo = r;
       await this.put('campagna', c); await this.put('membri', membri);
@@ -957,7 +973,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     const id = String(m.id || io), segPrima = await this.get('segnalini', {});
     const mio = id === io || segPrima[id]?.padrone === io; // il proprio animale lo muove il suo giocatore
     if (!mio && !capo) return;
-    if (!capo) m = { x: m.x, y: m.y }; // un giocatore sposta solo il suo segnalino: non ne cambia tipo, nome o punti ferita
+    if (!capo) m = { x: m.x, y: m.y, aura: m.aura }; // un giocatore sposta solo il suo segnalino (e gli dà un'aura): non ne cambia tipo, nome o punti ferita
     const seg = await this.get('segnalini', {});
     let via = null;
     if (!m.rimuovi && seg[id] && (seg[id].tipo === 'pg' || seg[id].padrone) && (!capo || mio)) {
@@ -971,7 +987,13 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
       if (luogo && x < luogo.w && y < luogo.h) { const presi = new Set(Object.entries(seg).filter(([k]) => k !== id).map(([, s]) => s.y * luogo.w + s.x)); ({ x, y } = vicine(luogo, { x, y }, presi)); }
     }
     if (m.rimuovi && capo) delete seg[id];
-    else seg[id] = { x, y, nome: testo(m.nome, 30) || seg[id]?.nome, colore: m.colore || seg[id]?.colore, tipo: m.tipo || seg[id]?.tipo || 'pg', pf: m.pf ?? seg[id]?.pf, ca: m.ca ?? seg[id]?.ca };
+    else {
+      const prima = seg[id] || {};
+      seg[id] = { ...prima, x, y, nome: testo(m.nome, 30) || prima.nome, colore: m.colore || prima.colore, tipo: m.tipo || prima.tipo || 'pg', pf: m.pf ?? prima.pf, ca: m.ca ?? prima.ca };
+      if (seg[id].tipo === 'nemico' && seg[id].pf !== undefined) seg[id].pfMax = Math.max(prima.pfMax || 0, seg[id].pf); // per la barra della vita
+      if (m.aura !== undefined) { const a = Math.max(0, Math.min(12, m.aura | 0)); if (a) seg[id].aura = a; else delete seg[id].aura; }
+      if (capo && m.ignoto !== undefined) { if (m.ignoto) seg[id].ignoto = true; else delete seg[id].ignoto; } // nome nascosto ai giocatori finché il master non lo svela
+    }
     await this.put('segnalini', seg);
     this.tutti({ t: 'segnalini', segnalini: seg });
     if (seg[id]?.tipo === 'pg') await this.scopri(via?.length ? via : [seg[id]]);
@@ -1047,6 +1069,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     this.tutti({ t: 'luogo', luogo, segnalini: seg, luoghi: await this.get('luoghi', {}) });
     this.tutti({ t: 'diario', ev });
     this.tutti({ t: 'note_mappa', luogo: id, note: await this.get('note:' + id, []) });
+    this.tutti({ t: 'disegni', luogo: id, disegni: await this.get('disegni:' + id, []) });
     if (precedente !== id && !luogo.genitore) await this.forseMercante(luogo);
   }
 
@@ -1123,11 +1146,12 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
       for (const [id, s2] of Object.entries(seg)) if (s2.tipo === 'nemico') { const d = tiraFormula('d20' + (s2.iniz ? '+' + s2.iniz : '')); ordine.push({ id, nome: s2.nome, iniz: d.totale, dado: d.dadi[0], tipo: 'nemico' }); }
       ordine.sort((a, b) => b.iniz - a.iniz || b.dado - a.dado);
       if (!ordine.length) { if (io !== 'master') this.invia(this.wsDi(io), { t: 'errore', msg: 'Non c\'è nessuno da mettere in ordine: servono personaggi o nemici sulla mappa' }); return; }
-      c = { attivo: true, round: 1, turno: 0, ordine, inizio: Date.now() };
+      c = { attivo: true, round: 1, turno: 0, ordine, inizio: Date.now(), inizioTurno: Date.now() };
       await this.diario('combattimento', `Inizia il combattimento! Ordine: ${ordine.map(o => `${o.nome} (${o.iniz})`).join(', ')}.`, io);
     } else if (!c?.attivo) return;
     else if (az === 'prossimo') {
       c.turno++; if (c.turno >= c.ordine.length) { c.turno = 0; c.round++; }
+      c.inizioTurno = Date.now();
     } else if (az === 'fine') { c.attivo = false; await this.diario('combattimento', `Fine del combattimento dopo ${c.round} round.`, io); }
     else if (az === 'aggiungi') { c.ordine.push({ id: 'x' + Date.now(), nome: testo(m.nome, 30) || 'Creatura', iniz: Number(m.iniz) || tiraFormula('d20').totale, tipo: 'nemico' }); c.ordine.sort((a, b) => b.iniz - a.iniz); }
     else if (az === 'togli') { const i = c.ordine.findIndex(o => o.id === m.id); if (i >= 0) { c.ordine.splice(i, 1); if (c.turno > i) c.turno--; if (c.turno >= c.ordine.length) c.turno = 0; } if (!c.ordine.length) c.attivo = false; }
@@ -1146,6 +1170,27 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     aree = aree.slice(-20);
     await this.put('aree', aree);
     this.tutti({ t: 'aree', aree });
+    if (!m.togli && !m.pulisci && m.ts) await this.effettoArea(io, aree[aree.length - 1], m);
+  }
+  // incantesimo ad area con tiro salvezza: ogni creatura dentro tira (i dadi li tira il server), chi fallisce prende i danni pieni, chi supera la metà
+  async effettoArea(io, a, m) {
+    const CAR = { for: 'Forza', des: 'Destrezza', cos: 'Costituzione', int: 'Intelligenza', sag: 'Saggezza', car: 'Carisma' };
+    const k = CAR[m.ts] ? m.ts : null, cd = Math.max(1, Math.min(40, m.cd | 0)); if (!k || !a) return;
+    const formula = String(m.danni || '').replace(/\s+/g, '').slice(0, 12), danni = formula ? tiraFormula(formula) : null; // dadi non validi: nessun danno, resta il tiro salvezza
+    const luogo = await this.get('luogo:' + await this.get('luogoAttuale')); if (!luogo) return;
+    const dentro = new Set(celleArea(a, luogo).map(([x, y]) => x + ',' + y)), seg = await this.get('segnalini', {}), righe = [];
+    for (const [id, s] of Object.entries(seg)) {
+      if (!dentro.has(s.x + ',' + s.y) || !['pg', 'nemico'].includes(s.tipo) || s.padrone) continue;
+      const pg = s.tipo === 'pg' ? await this.get('pg:' + id) : null; if (s.tipo === 'pg' && !pg) continue;
+      const dichiarato = Number(m.bonusPg?.[id]);
+      const bonus = pg ? Math.max(-5, Math.min(20, Number.isFinite(dichiarato) ? Math.round(dichiarato) : Math.floor(((pg.car?.[k] || 10) - 10) / 2))) : Math.max(-5, Math.min(15, Math.round(Number(m.bonusNemici)) || 2));
+      const tiro = tiraFormula('d20' + (bonus ? (bonus > 0 ? '+' : '') + bonus : '')), riesce = tiro.totale >= cd;
+      const q = danni ? (riesce ? (m.mezzo === false ? 0 : Math.floor(danni.totale / 2)) : danni.totale) : 0;
+      righe.push(`${pg?.nome || s.nome || 'qualcuno'} ${riesce ? 'supera' : 'fallisce'} (${tiro.totale})${danni ? `, ${q} danni` : ''}`);
+      if (q > 0) await this.applicaEvento(pg ? { tipo: 'danno', pg: id, quantita: q, motivo: a.nome || 'incantesimo ad area' } : { tipo: 'danno_nemico', nemico: id, quantita: q });
+    }
+    const ev = await this.diario('combattimento', `${a.nome || 'Area'}: tiro salvezza su ${CAR[k]}, CD ${cd}${danni ? `, danni ${formula} = ${danni.totale}` : ''}. ${righe.length ? righe.join('; ') + '.' : 'Nessuno nell\'area.'}`, io);
+    this.tutti({ t: 'diario', ev });
   }
 
   // ---------- tesoro del gruppo: monete e oggetti in comune ----------
