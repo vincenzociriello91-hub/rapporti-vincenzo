@@ -32,9 +32,10 @@ export async function sintesiVocale(env, testoV, png) {
   const h = [...String(png || '')].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 7);
   const voceNome = png ? VOCI_PNG[h % VOCI_PNG.length] : (env.VOCE_NARRATORE || 'Charon');
   const stile = png ? `Recita in italiano dando voce a ${png}, con il tono adatto al personaggio:` : 'Leggi in italiano come il narratore di un\'avventura fantasy, con voce calda, espressiva e coinvolgente:';
-  const corpo = { contents: [{ parts: [{ text: `${stile}\n${testo(testoV, 1500)}` }] }], generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voceNome } } } } };
+  // i modelli 3.8 leggono parola per parola tutto il testo (anche la regia): a loro va solo la battuta, ai modelli più vecchi la regia davanti
+  const corpo = m => ({ contents: [{ parts: [{ text: /^gemini-3\.8/.test(m) ? testo(testoV, 1500) : `${stile}\n${testo(testoV, 1500)}` }] }], generationConfig: { responseModalities: ['AUDIO'], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voceNome } } } } });
   for (const modello of [...new Set([env.GEMINI_TTS, 'gemini-3.8-flash-lite-tts', 'gemini-3.8-flash-tts', 'gemini-3.1-flash-tts-preview', 'gemini-2.5-flash-preview-tts'].filter(Boolean))]) {
-    const r = await fetch(`${env.GEMINI_BASE || 'https://generativelanguage.googleapis.com'}/v1beta/models/${modello}:generateContent?key=${encodeURIComponent(env.GEMINI_KEY)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(corpo) });
+    const r = await fetch(`${env.GEMINI_BASE || 'https://generativelanguage.googleapis.com'}/v1beta/models/${modello}:generateContent?key=${encodeURIComponent(env.GEMINI_KEY)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(corpo(modello)) });
     if (!r.ok) { if ([400, 404, 429, 500, 503].includes(r.status)) continue; return null; }
     const parte = (await r.json()).candidates?.[0]?.content?.parts?.find(p => p.inlineData?.data);
     if (!parte) continue;
