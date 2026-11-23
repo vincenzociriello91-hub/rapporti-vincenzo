@@ -659,7 +659,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
       return ris({ campagna: c, membri: pg, luogo_attuale: attuale ? (await this.get('luogo:' + attuale))?.nome : null, luoghi: Object.values(await this.get('luoghi', {})).map(l => l.nome), memoria: await this.get('memoria', ''), mondo: await this.get('mondo', {}), tesoro: await this.get('gruppo', null), costi: await this.get('costi', null), suggerimenti: (await this.get('suggerimenti', [])).slice(-20), online: this.online().length });
     }
     if (m.azione === 'diario') return ris((await this.get('diario', [])).slice(-Math.min(200, m.n || 50)).map(d => `${new Date(d.t).toISOString().slice(0, 16)} [${d.tipo}] ${d.testo}`));
-    if (m.azione === 'nota') { const mem = await this.get('memoria', ''); await this.put('memoria', testo(`${mem}\nNote di preparazione del master: ${testo(m.testo, 1500)}`, 7000)); return ris({ ok: true }); }
+    if (m.azione === 'nota') { const mem = await this.get('memoria', ''); await this.put('memoria', `${mem}\nNote di preparazione del master: ${testo(m.testo, 1500)}`.slice(-7000)); return ris({ ok: true }); }
     if (m.azione === 'prepara_luogo') { const id = chiaveLuogo(testo(m.nome, 60)); if (!await this.get('luogo:' + id)) { const l = generaLuogo(testo(m.nome, 60), m.tipo || indovinaTipo(m.nome), c.creata + ':' + id); await this.put('luogo:' + id, l); const idx = await this.get('luoghi', {}); idx[id] = { nome: l.nome, tipo: l.tipo, prima: Date.now() }; await this.put('luoghi', idx); } return ris({ ok: true, luogo: m.nome }); }
     if (m.azione === 'fazione') { await this.applicaEvento({ tipo: 'fazione', nome: m.nome, descrizione: m.descrizione }); if (m.delta) await this.applicaEvento({ tipo: 'reputazione', fazione: m.nome, delta: m.delta, motivo: m.motivo }); return ris({ ok: true }); }
     return ris({ errore: 'azione sconosciuta' });
@@ -772,7 +772,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
         }
         case 'ricorda': { // un fatto che il gruppo vuole far ricordare al master: entra nella memoria e nella cronaca
           if (!capo) return; const t = testo(m.testo, 300).trim(); if (!t) return;
-          await this.put('memoria', testo(`${await this.get('memoria', '')}\nDa ricordare (detto dai giocatori): ${t}`, 7000)); await this.put('cronaca', testo(`${await this.get('cronaca', '')}\n• ${t}`, 3000));
+          await this.put('memoria', `${await this.get('memoria', '')}\nDa ricordare (detto dai giocatori): ${t}`.slice(-7000)); await this.put('cronaca', `${await this.get('cronaca', '')}\n• ${t}`.slice(-3000)); // pieno: si perde il più vecchio, non il fatto appena aggiunto
           return this.tutti({ t: 'cronaca', cronaca: await this.get('cronaca', '') });
         }
         case 'comando': { const ev = await this.diario('comando', `${me.nome}: ${testo(m.testo, 300)}`, io); return this.tutti({ t: 'diario', ev }); }
