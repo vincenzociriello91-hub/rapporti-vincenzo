@@ -40,7 +40,14 @@ export function b64url(b) { let s = ''; for (const x of b) s += String.fromCharC
 export const COPIA = /^(pg:|luogo:|note:)|^(campagna|diario|memoria|mondo|png|luoghi|luogoAttuale|segnalini|gruppo|missioni|voto|enigma|nemesi|scelte|minacce|base|serate|riepiloghi|memoriale|relazioni|statistiche|avventura|tattiche|dungeonGiorno|aree|combattimento|negozio|noteMaster|daRiassumere)$/;
 export const PER_SPETTATORI = ['reazione', 'stato', 'riepiloghi', 'libro', 'statistiche', 'traduci', 'esci', 'impostazioni', 'rtc', 'suggerimento'];
 export const SILENZIO = 4 * 60000; // dopo quanti minuti di silenzio il master AI fa succedere qualcosa
-export const REAZIONI = ['👏', '😂', '😱', '🔥', '❤️', '🎲'];
+export const REAZIONI = ['👏', '😂', '😱', '🔥', '❤️', '🎲', '✋'];
+// mazzo da 54 carte per i giochi e le decisioni al tavolo
+export const MAZZO = [...['Cuori', 'Quadri', 'Fiori', 'Picche'].flatMap(seme => ['Asso', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'Fante', 'Donna', 'Re'].map(v => `${v} di ${seme}`)), 'Jolly rosso', 'Jolly nero'];
+export const DIFFICOLTA = {
+  storia: 'MODALITÀ STORIA: conta il racconto. Usa CD basse (8-12), nemici meno numerosi; un personaggio a 0 punti ferita è fuori combattimento ma non muore mai.',
+  normale: '',
+  dura: 'MODALITÀ DURA: CD più alte (13-18), nemici numerosi, furbi e letali, risorse scarse. La morte è definitiva: a 0 punti ferita si tirano i tiri salvezza contro la morte e chi muore va nel memoriale (evento morte), senza resurrezioni facili.'
+};
 export const LINGUE = { it: 'italiano', en: 'inglese', es: 'spagnolo', fr: 'francese', de: 'tedesco' };
 export const SUONI = ['porta', 'colpo', 'magia', 'monete', 'pozione', 'vittoria', 'sconfitta', 'raro', 'ferito', 'successo', 'critico', 'livello', 'tocco', 'tuono'];
 export const ATTESA_MASTER = 3500; // ms di silenzio prima che il master AI risponda a quanto detto

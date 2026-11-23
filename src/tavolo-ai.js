@@ -54,8 +54,16 @@ export function wav16k(pcm, rate) {
   return buf;
 }
 export const STILE_IMG = 'Realistic cinematic fantasy illustration, Dungeons and Dragons, dramatic volumetric lighting, highly detailed, painterly realism, no text, no watermark. ';
-export async function generaImmagine(env, prompt, piccola) {
-  const stile = STILE_IMG;
+// stile delle illustrazioni a scelta di chi crea la campagna (Altro → Campagna)
+export const STILI_IMG = {
+  realistico: STILE_IMG,
+  acquerello: 'Soft watercolor fantasy illustration, storybook art, delicate washes, visible paper texture, warm light, no text, no watermark. ',
+  fumetto: 'Comic book fantasy illustration, bold ink outlines, cel shading, vivid flat colors, dynamic composition, no text, no speech bubbles, no watermark. ',
+  pixel: '16-bit pixel art fantasy scene, SNES era JRPG style, limited color palette, crisp pixels, detailed sprites and tiles, no text, no watermark. ',
+  inchiostro: 'Black ink and sepia fantasy illustration, old manuscript engraving, fine crosshatching, parchment paper, no text, no watermark. ',
+  olio: 'Classical oil painting, fantasy scene, old masters chiaroscuro, rich brushwork, museum quality, no text, no watermark. '
+};
+export async function generaImmagine(env, prompt, piccola, stile = STILE_IMG) {
   if (env.IMG_FINTA) return Uint8Array.from(atob('/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/yQALCAABAAEBAREA/8wABgAQEAX/2gAIAQEAAD8A0s8g/9k='), c => c.charCodeAt(0));
   const errori = []; let errore = null;
   if (env.AI) {
