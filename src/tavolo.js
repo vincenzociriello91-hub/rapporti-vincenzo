@@ -33,6 +33,7 @@ export class Tavolo extends DurableObject {
       if (!dati) return new Response('non pronto', { status: 404, headers: { 'Access-Control-Allow-Origin': '*' } });
       return new Response(dati, { headers: { 'Content-Type': md[1] === 'voce' ? 'audio/wav' : 'image/jpeg', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'public, max-age=31536000, immutable' } });
     }
+    if (req.method === 'GET' && /\/avviso$/.test(new URL(req.url).pathname)) { const a = await this.get('ultimoAvviso', null); return new Response(JSON.stringify({ tipo: a && Date.now() - a.t < 600000 ? a.tipo : null }), { headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' } }); }
     const gr = new URL(req.url).pathname.match(/\/grafica\/atlante\.(png|json)$/);
     if (req.method === 'GET' && gr) return this.grafica(req, gr[1]);
     const pair = new WebSocketPair();
@@ -283,7 +284,7 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
   }
   // master proattivo: se il tavolo tace da qualche minuto fa succedere qualcosa (al massimo due volte di fila)
   async controllaSilenzio() {
-    const c = await this.get('campagna'); if (c?.masterTipo !== 'ai') return this.prossimoControllo();
+    const c = await this.get('campagna'); if (c?.masterTipo !== 'ai' || c.differito) return this.prossimoControllo(); // a distanza il master non riempie i silenzi: aspetta le mosse
     const membri = await this.get('membri', {}), online = this.online().filter(x => membri[x]?.ruolo === 'giocatore');
     if (!online.length) return this.prossimoControllo();
     const diario = await this.get('diario', []), ultimo = diario[diario.length - 1]?.t || 0;
@@ -294,7 +295,7 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
   async prossimoControllo() {
     const a = await this.ctx.storage.getAlarm(), pross = await this.prossimoPromemoria();
     const membri = await this.get('membri', {}), qualcuno = this.online().some(x => membri[x]?.ruolo === 'giocatore');
-    const quando = Math.min(qualcuno ? Date.now() + SILENZIO : Infinity, pross || Infinity);
+    const quando = Math.min(qualcuno ? Date.now() + SILENZIO : Infinity, pross || Infinity, (await this.get('giroScade', 0)) || Infinity);
     if (quando !== Infinity && (!a || a > quando)) await this.ctx.storage.setAlarm(quando);
   }
   // ---------- promemoria delle serate come notifica sul telefono (Web Push senza contenuto: niente dati personali in giro) ----------
@@ -302,10 +303,18 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
   async mandaPromemoria() {
     const l = await this.get('serate', []), iscritti = await this.get('push', {}); let cambiato = false;
     for (const x of l) for (const [k, dt] of PROMEMORIA) if (!x.avvisi?.[k] && Date.now() >= x.t - dt && Date.now() < x.t) {
-      x.avvisi = { ...(x.avvisi || {}), [k]: true }; cambiato = true;
+      x.avvisi = { ...(x.avvisi || {}), [k]: true }; cambiato = true; await this.put('ultimoAvviso', { tipo: 'serata', t: Date.now() });
       for (const [id, sub] of Object.entries(iscritti)) if (x.risposte?.[id] !== false) { const ok = await this.webPush(sub); if (ok === 'via') { delete iscritti[id]; await this.put('push', iscritti); } }
     }
     if (cambiato) await this.put('serate', l);
+  }
+  // gioco a distanza: notifica «tocca a te» a chi deve ancora scrivere e non è collegato
+  async avvisaTurno(ids) {
+    const iscritti = await this.get('push', {}), on = this.online(); let cambiato = false, mandate = 0;
+    for (const id of ids || []) { if (on.includes(id) || !iscritti[id]) continue; const ok = await this.webPush(iscritti[id]); if (ok === 'via') { delete iscritti[id]; cambiato = true; } else if (ok) mandate++; }
+    if (cambiato) await this.put('push', iscritti);
+    if (mandate) await this.put('ultimoAvviso', { tipo: 'turno', t: Date.now() });
+    return mandate;
   }
   async webPush(endpoint) {
     try {
@@ -626,6 +635,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
   async interno(m) {
     const ris = o => new Response(JSON.stringify(o), { headers: { 'Content-Type': 'application/json' } });
     if (m.azione === 'manuale_leggi') return ris(await this.get('manuale', { lezioni: [], problemi: [] }));
+    if (m.azione === 'mondo_leggi') return ris(await this.mondoDaCondividere(String(m.chiave || '')));
     if (m.azione === 'vapid') {
       let k = await this.get('vapid', null);
       if (!k) { const c = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']); const jwk = await crypto.subtle.exportKey('jwk', c.privateKey), raw = new Uint8Array(await crypto.subtle.exportKey('raw', c.publicKey)); k = { jwk, pub: b64url(raw) }; await this.put('vapid', k); }
@@ -702,7 +712,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
       mostri: await this.get('mostri', {}), volti: await this.get('volti', {}), negozio: await this.get('negozio', null),
       png: await this.get('png', {}), memoriale: await this.get('memoriale', []), ...(await this.mondoVivo(vedeSegreti)), serate: await this.get('serate', []), giocoTaverna: await this.get('giocoTaverna', null), noteMappa: { luogo: await this.get('luogoAttuale'), note: await this.get('note:' + await this.get('luogoAttuale'), []) }, disegni: { luogo: attuale, disegni: await this.get('disegni:' + attuale, []) }, avventure: Object.entries(AVVENTURE).map(([id, a]) => ({ id, titolo: a.titolo, livelli: a.livelli, tipo: a.tipo, seguito: a.seguito })),
       avventura: vedeSegreti ? await this.avventuraPerMaster() : undefined,
-      cronaca: await this.get('cronaca', ''), appunti: vedeSegreti ? await this.get('appunti', '') : undefined, fatti: vedeSegreti ? await this.get('fatti', []) : undefined, giro: await this.statoGiro(),
+      cronaca: await this.get('cronaca', ''), appunti: vedeSegreti ? await this.get('appunti', '') : undefined, fatti: vedeSegreti ? await this.get('fatti', []) : undefined, giro: await this.statoGiro(), mondoChiave: io?.admin ? await this.get('mondoChiave', '') : undefined,
       memoria: vedeSegreti ? memoria : undefined, suggerimenti: vedeSegreti ? suggerimenti.slice(-30) : undefined,
       costi: vedeSegreti ? await this.get('costi', null) : undefined
     };
@@ -802,13 +812,15 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
         case 'narra': if (!capo) return; { const ev = await this.diario('narrazione', m.testo, io); return this.tutti({ t: 'narra', testo: ev.testo, png: testo(m.png, 40), chi: io }); }
         case 'rtc': return this.rtc(io, m);
         case 'impostazioni': return this.impostazioni(ws, io, me, capo, m);
+        case 'mondo_condividi': { if (!me.admin) return; let k = await this.get('mondoChiave', ''); if (m.ritira) k = ''; else if (!k || m.nuovo) k = codiceCasuale(8); await this.put('mondoChiave', k); return this.invia(ws, { t: 'mondo_chiave', chiave: k }); }
+        case 'mondo_importa': return this.importaMondo(ws, me, m);
         case 'nuovo_invito': if (!capo) return; { const c = await this.get('campagna'); c.invito = codiceCasuale(8); c.invitoSpettatori = codiceCasuale(10); await this.put('campagna', c); return this.tutti({ t: 'invito', invito: c.invito, invitoSpettatori: c.invitoSpettatori }, x => { const mm = membri[x]; return mm && (mm.ruolo === 'master' || mm.admin || c.masterTipo === 'ai'); }); }
         case 'suggerimento': { const s = await this.get('suggerimenti', []); s.push({ t: Date.now(), chi: me.nome, testo: testo(m.testo, 1500) }); while (s.length > 200) s.shift(); await this.put('suggerimenti', s); return this.invia(ws, { t: 'ok', cosa: 'suggerimento' }); }
         case 'interpreta': return this.interpreta(ws, io, me, m);
         case 'regola': return this.regola(ws, me, m);
         case 'riassunto': return this.inviaRiassunto(ws, m.formato);
         case 'stato': return this.invia(ws, { t: 'stato', stato: await this.statoCompleto(io) });
-        case 'master_ora': await this.put('giroDetti', []); return this.programmaMaster(true);
+        case 'master_ora': if (!capo) return; await this.put('giroDetti', []); await this.put('giroScade', 0); return this.programmaMaster(true);
         case 'combattimento': return this.combattimento(io, me, capo, m);
         case 'area': return this.area(io, capo, m);
         case 'gruppo': return this.gruppo(io, me, m);
@@ -945,6 +957,40 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     await this.accetta(ws, m.membro, membri);
   }
 
+  // ---------- mondi condivisi: chi ha creato la campagna dà un codice, un altro gruppo comincia la sua storia nello stesso mondo ----------
+  // Si copiano ambientazione, appunti del mondo, fatti fissati dal master, luoghi con le loro mappe, fazioni e valute.
+  // Non si copiano personaggi, diario, memoria, tesori: quelli sono la storia del gruppo, non il mondo.
+  async mondoDaCondividere(chiave) {
+    const k = await this.get('mondoChiave', ''); if (!k || chiave !== k) return { ok: false };
+    const c = await this.get('campagna'), idx = await this.get('luoghi', {}), luoghi = {};
+    for (const id of Object.keys(idx).slice(0, 40)) { const l = await this.get('luogo:' + id); if (l) { const { visto, visite, ...r } = l; luoghi[id] = { ...r, seme: l.seme || c.creata }; } }
+    const mo = await this.get('mondo', { fazioni: {}, valute: {} }), png = await this.get('png', {});
+    return { ok: true, nome: c.nome, ambientazione: c.ambientazione, appunti: await this.get('appunti', ''), fatti: await this.get('fatti', []), luoghi,
+      fazioni: Object.fromEntries(Object.entries(mo.fazioni || {}).map(([n, f]) => [n, { descrizione: f.descrizione }])), valute: mo.valute || {},
+      personaggi: Object.entries(png).slice(0, 30).map(([n, p]) => `${n}${p.luogo ? ` (${p.luogo})` : ''}${p.note?.length ? ': ' + p.note.join('; ') : ''}`) };
+  }
+  async importaMondo(ws, me, m) {
+    if (!me.admin) return;
+    const no = msg => this.invia(ws, { t: 'avviso', msg, errore: true });
+    const mt = String(m.codice || '').toUpperCase().replace(/[^A-Z0-9-]/g, '').match(/^([A-Z0-9]{6,12})-([A-Z0-9]{8})$/);
+    if (!mt) return no('Codice del mondo non valido: è fatto di due parti unite da un trattino');
+    const altro = this.env.TAVOLO.idFromName(mt[1]); if (altro.equals(this.ctx.id)) return no('Questo è il codice del mondo di questa stessa campagna');
+    let w = null; try { w = await (await this.env.TAVOLO.get(altro).fetch('https://tavolo/interno', { method: 'POST', headers: { 'x-tavolo-interno': '1' }, body: JSON.stringify({ azione: 'mondo_leggi', chiave: mt[2] }) })).json(); } catch { /* sotto */ }
+    if (!w?.ok) return no('Mondo non trovato: il codice è sbagliato oppure è stato ritirato da chi lo ha creato');
+    const c = await this.get('campagna'), idx = await this.get('luoghi', {}); let nuovi = 0;
+    for (const [id, l] of Object.entries(w.luoghi || {})) { if (idx[id] || !l?.celle || !l.nome || id.length > 80) continue; await this.put('luogo:' + id, l); idx[id] = { nome: l.nome, tipo: l.tipo, prima: Date.now() }; nuovi++; }
+    await this.put('luoghi', idx);
+    c.ambientazione = testo(w.ambientazione, 400) || c.ambientazione; c.mondoDa = testo(w.nome, 60); await this.put('campagna', c);
+    const gente = (w.personaggi || []).length ? 'Personaggi del mondo: ' + w.personaggi.map(p => testo(p, 200)).join(' · ') : '';
+    await this.put('appunti', testo([await this.get('appunti', ''), w.appunti, gente].filter(Boolean).join('\n\n'), 8000));
+    const fatti = await this.get('fatti', []); for (const f of w.fatti || []) { const t = testo(f, 240); if (t && !fatti.includes(t)) fatti.push(t); } await this.put('fatti', fatti.slice(-40));
+    const mo = await this.get('mondo', { fazioni: {}, valute: {}, viaggi: [], notizie: [] });
+    for (const [n, f] of Object.entries(w.fazioni || {}).slice(0, 20)) if (!mo.fazioni[n]) mo.fazioni[testo(n, 60)] = { reputazione: 0, descrizione: testo(f?.descrizione, 200) }; // il nuovo gruppo parte da sconosciuto
+    mo.valute = { ...(w.valute || {}), ...mo.valute }; await this.put('mondo', mo);
+    await this.diario('sistema', `${me.nome} porta la campagna nel mondo «${c.mondoDa}»: ${nuovi} luoghi già pronti, con le loro mappe.`);
+    for (const s of this.ctx.getWebSockets()) { const x = this.membroDi(s); if (x) this.invia(s, { t: 'stato', stato: await this.statoCompleto(x) }); }
+  }
+
   async impostazioni(ws, io, me, capo, m) {
     const c = await this.get('campagna');
     const membri = await this.get('membri', {});
@@ -957,6 +1003,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
       if (m.difficolta !== undefined) c.difficolta = DIFFICOLTA[m.difficolta] !== undefined ? m.difficolta : 'normale';
       if (m.giro !== undefined) { c.giro = !!m.giro; if (!c.giro) await this.put('giroDetti', []); } // turni a giro: il master risponde quando tutti hanno detto la loro
       if (m.stileImg !== undefined) c.stileImg = STILI_IMG[m.stileImg] ? m.stileImg : 'realistico';
+      if (m.differito !== undefined) { c.differito = [6, 12, 24, 48].includes(Number(m.differito)) || (this.env.IMG_FINTA && Number(m.differito) > 0) ? Number(m.differito) : 0; /* nelle prove in locale valgono anche attese di pochi secondi */ if (!c.differito) { await this.put('giroScade', 0); if (!c.giro) await this.put('giroDetti', []); } } // gioco a distanza: ognuno scrive quando può, il master risponde quando hanno scritto tutti o dopo queste ore
       if (m.timerTurno !== undefined) c.timerTurno = [30, 60, 90, 120].includes(Number(m.timerTurno)) ? Number(m.timerTurno) : 0; // clessidra del turno, in secondi (0 = spenta)
       if (m.nuovaSessione) { c.sessione = (c.sessione || 1) + 1; c.invito = codiceCasuale(8); c.invitoSpettatori = codiceCasuale(10); await this.diario('sistema', `Inizia la sessione ${c.sessione}.`); this.ctx.waitUntil(this.evolviMondo(false)); await this.minacceCrescono(); for (const x of this.online()) if (membri[x] && membri[x].sessioneVista !== c.sessione) { membri[x].presenze = (membri[x].presenze || 0) + 1; membri[x].sessioneVista = c.sessione; } await this.put('membri', membri); }
       if (m.ruoli && me.admin) for (const [id, r] of Object.entries(m.ruoli)) if (membri[id] && ['giocatore', 'spettatore', 'master'].includes(r)) membri[id].ruolo = r;
@@ -977,7 +1024,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     await this.put('pg:' + per, m.pg);
     await this.contaPf(per, primaPg, m.pg);
     this.tutti({ t: 'scheda', per, pg: m.pg, nota: m.nota ? testo(m.nota, 300) : null, da: io });
-    if (m.nota) { const ev = await this.diario('scheda', `${m.pg.nome || me.nome}: ${testo(m.nota, 300)}`, io); this.tutti({ t: 'diario', ev }); }
+    if (m.nota) { const ev = await this.diario('scheda', `${m.pg.nome || me.nome}: ${testo(m.nota, 300)}`, io); this.tutti({ t: 'diario', ev }); }    if (!primaPg && m.pg.nome) { const avv = await this.get('avventura', null); if (avv && !avv.iniziata && AVVENTURE[avv.id]?.guidata) await this.programmaMaster(true); } // primi passi: appena il personaggio è pronto l'avventura comincia da sola
   }
 
   // ---------- dadi (tirati dal server, nessuno può barare) ----------
@@ -1107,7 +1154,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
   async luogoCon(id) {
     const l = id ? await this.get('luogo:' + id) : null;
     if (l && (!l.oggetti || l.arrediV !== ARREDI_V)) {
-      const c = await this.get('campagna'), nuovo = generaLuogo(l.nome, l.tipo, (c?.creata || l.creato) + ':' + id, l.tipo === 'interno' ? l.edifici.map(e => e.nome) : undefined);
+      const c = await this.get('campagna'), nuovo = generaLuogo(l.nome, l.tipo, (l.seme || c?.creata || l.creato) + ':' + id, l.tipo === 'interno' ? l.edifici.map(e => e.nome) : undefined);
       l.celle = nuovo.celle; l.oggetti = nuovo.oggetti; l.arrediV = ARREDI_V;
       for (const e of nuovo.edifici) if (['ponte', 'guado'].includes(e.id) && !l.edifici.some(x => x.id === e.id)) l.edifici.push(e); // ponti e guadi arrivati dopo
       for (const e of l.edifici) if (e.stato === 'bruciato' || e.stato === 'distrutto') for (const o of l.oggetti) if (o.x >= e.x && o.x < e.x + e.w && o.y >= e.y && o.y < e.y + e.h) o.stato = e.stato === 'bruciato' ? 'bruciato' : 'rotto';
@@ -1282,19 +1329,27 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     const c = await this.get('campagna');
     if (c.masterTipo === 'ai' && me.ruolo !== 'spettatore') await this.chiamaMaster(io, me, !!m.alMaster);
   }
-  // Turni a giro (fuori dal combattimento): il master risponde quando tutti i giocatori collegati hanno detto la loro, o dopo un minuto e mezzo
+  // Turni a giro (fuori dal combattimento): il master risponde quando tutti i giocatori collegati hanno detto la loro, o dopo un minuto e mezzo.
+  // Gioco a distanza: lo stesso giro, ma conta anche chi non è collegato e l'attesa è di ore; a chi manca arriva una notifica.
   async statoGiro() {
-    const c = await this.get('campagna'); if (!c?.giro || c.masterTipo !== 'ai') return null;
-    const membri = await this.get('membri', {}), detti = await this.get('giroDetti', []), on = this.online();
+    const c = await this.get('campagna'); if (!(c?.giro || c?.differito) || c.masterTipo !== 'ai') return null;
+    const membri = await this.get('membri', {}), detti = await this.get('giroDetti', []), on = c.differito ? Object.keys(membri) : this.online();
     const attesi = []; for (const id of on) if (membri[id]?.ruolo === 'giocatore' && await this.get('pg:' + id)) attesi.push(id);
-    return { detti: detti.filter(id => attesi.includes(id)), mancano: attesi.filter(id => !detti.includes(id)).map(id => membri[id].nome) };
+    const mancanoId = attesi.filter(id => !detti.includes(id));
+    return { detti: detti.filter(id => attesi.includes(id)), mancano: mancanoId.map(id => membri[id].nome), mancanoId, differito: c.differito || 0, scade: c.differito ? await this.get('giroScade', 0) : 0 };
   }
   async chiamaMaster(io, me, subito) {
     const c = await this.get('campagna'), comb = await this.get('combattimento', null);
-    if (!c.giro || comb?.attivo || me.ruolo !== 'giocatore') return this.programmaMaster(subito);
+    if (!(c.giro || c.differito) || comb?.attivo || me.ruolo !== 'giocatore') return this.programmaMaster(subito);
     const detti = await this.get('giroDetti', []); if (!detti.includes(io)) detti.push(io); await this.put('giroDetti', detti);
     const g = await this.statoGiro(); this.tutti({ t: 'giro', giro: g });
-    if (!g.mancano.length) { await this.put('giroDetti', []); return this.programmaMaster(true); }
+    if (!g.mancano.length) { await this.put('giroDetti', []); await this.put('giroScade', 0); return this.programmaMaster(true); }
+    if (c.differito) { // a distanza: l'orologio parte con il primo che scrive; chi manca e non è collegato riceve una notifica
+      let scade = await this.get('giroScade', 0);
+      if (!scade) { scade = Date.now() + c.differito * 3600000; await this.put('giroScade', scade); this.tutti({ t: 'giro', giro: { ...g, scade } }); await this.avvisaTurno(g.mancanoId); }
+      const a = await this.ctx.storage.getAlarm(); if (!a || a > scade) await this.ctx.storage.setAlarm(scade);
+      return;
+    }
     await this.put('masterInAttesa', true);
     const gia = await this.ctx.storage.getAlarm(), limite = Date.now() + 90000;
     if (!gia || gia > limite || detti.length === 1) await this.ctx.storage.setAlarm(limite);
@@ -1311,11 +1366,13 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     if (await this.get('masterOccupato', false) && Date.now() - (await this.get('masterDal', 0)) < 40000) {
       await this.ctx.storage.setAlarm(Date.now() + 1500); return;
     }
+    const scade = await this.get('giroScade', 0);
+    if (scade && Date.now() >= scade) { await this.put('giroScade', 0); await this.put('masterInAttesa', true); } // gioco a distanza: tempo scaduto, il master risponde a chi ha scritto
     if (await this.get('masterInAttesa', false)) {
       await this.put('masterInAttesa', false);
       await this.put('masterOccupato', true); await this.put('masterDal', Date.now());
       this.tutti({ t: 'master_pensa' });
-      try { await this.turnoMaster(); } finally { await this.put('masterOccupato', false); if ((await this.get('campagna'))?.giro) { await this.put('giroDetti', []); this.tutti({ t: 'giro', giro: await this.statoGiro() }); } }
+      try { await this.turnoMaster(); } finally { await this.put('masterOccupato', false); const cg = await this.get('campagna'); if (cg?.giro || cg?.differito) { await this.put('giroDetti', []); await this.put('giroScade', 0); const g = await this.statoGiro(); this.tutti({ t: 'giro', giro: g }); if (cg.differito && g) await this.avvisaTurno(g.mancanoId); } }
     }
     if ((await this.get('daRiassumere', 0)) >= 25) await this.riassumi();
     if (await this.get('masterInAttesa', false)) return;
@@ -1395,13 +1452,14 @@ Il mondo è vivo (vedi "mondo_vivo"): fai tornare la nemesi nei momenti giusti, 
 Durante il combattimento rispetta l'ordine di iniziativa e gioca tu i turni dei nemici quando tocca a loro.${c.sfida && !c.sfida.esito ? `
 SFIDA DELLA SETTIMANA "${c.sfida.titolo}": ${c.sfida.obiettivo} È un'avventura breve per una serata: prepara subito la scena, tieni il ritmo alto e sii giusto. Quando il giocatore completa l'obiettivo usa {"tipo":"sfida_vinta"}; se il personaggio muore o la sfida non è più possibile usa {"tipo":"sfida_persa"}.` : ''}${c.solitaria ? `
 PARTITA IN SOLITARIA: c'è un solo giocatore. Interpreti anche i suoi compagni alleati (${COMPAGNI.map(x => x.nome + ': ' + x.carattere).join('; ')}): falli parlare con la loro personalità, agire e combattere nel loro turno (descrivi le azioni e usa danno_nemico per i loro colpi), senza rubare la scena al giocatore. Dai qualche suggerimento in più su cosa si può fare e rispondi sempre subito.` : ''}${avv ? `
-AVVENTURA PRONTA "${AVVENTURE[avv.id].titolo}": seguila (trovi scene, segreti e scena attuale in "avventura"), ma lascia libertà ai giocatori e adattala alle loro scelte. Quando il gruppo arriva alla scena successiva usa {"tipo":"avventura","scena":"<id della scena>"}: l'app li porta nel luogo e mette i nemici della scena; poi tu decidi se e quando inizia il combattimento.` : ''}`;
+AVVENTURA PRONTA "${AVVENTURE[avv.id].titolo}": seguila (trovi scene, segreti e scena attuale in "avventura"), ma lascia libertà ai giocatori e adattala alle loro scelte. Quando il gruppo arriva alla scena successiva usa {"tipo":"avventura","scena":"<id della scena>"}: l'app li porta nel luogo e mette i nemici della scena; poi tu decidi se e quando inizia il combattimento.` : ''}${avv && AVVENTURE[avv.id].guidata ? `
+PRIMA PARTITA: chi gioca non ha mai fatto un gioco di ruolo. Frasi corte, niente gergo e niente sigle. A ogni tua risposta aggiungi in fondo un solo suggerimento pratico su cosa si può fare adesso nell'app, una cosa alla volta e mai due volte la stessa: scrivere o dire a voce cosa fa il personaggio; rispondere a un personaggio; fare una prova quando la chiedi (compare il tasto Tira); toccare una casella della mappa per muoversi; in combattimento attaccare nel proprio turno e poi premere Fine turno; guardare la Scheda. Fai riuscire le idee sensate, tieni basso il pericolo e non far morire nessuno. Chiedi una prova facile (CD 10) appena arrivano in cantina. Dopo l'ultima scena chiudi l'avventura con i complimenti.` : ''}`;
     const contesto = {
       avventura: avv ? { titolo: AVVENTURE[avv.id].titolo, sinossi: AVVENTURE[avv.id].sinossi, scena_attuale: AVVENTURE[avv.id].scene[avv.scena]?.id, scene: AVVENTURE[avv.id].scene.map(x => ({ id: x.id, luogo: x.luogo, obiettivo: x.obiettivo, png: x.png, indizi: x.indizi, incontro: x.incontro?.map(n => `${n.numero} ${n.nome}`).join(', ') || null, tesoro: x.tesoro || null })), segreti: AVVENTURE[avv.id].segreti, ricompensa: AVVENTURE[avv.id].ricompensa } : undefined,
       memoria_campagna: memoria || '(inizio della campagna)',
       appunti_del_mondo: (await this.get('appunti', '')) || undefined,
       fatti_decisi: await this.get('fatti', []),
-      giro: c.giro ? 'turni a giro: in ultimi_eventi trovi cosa ha dichiarato ogni giocatore; risolvi le azioni di tutti insieme, dando a ognuno il suo momento' : undefined,
+      giro: c.differito ? 'gioco a distanza: i giocatori scrivono a ore di distanza e leggono la tua risposta più tardi. In ultimi_eventi trovi cosa ha dichiarato ognuno: risolvi tutto in una sola narrazione un po\' più ampia del solito, dai a ogni personaggio il suo momento e chiudi con la situazione chiara e una scelta aperta per ciascuno. Chi non ha scritto resta prudente sullo sfondo: non decidere al suo posto' : c.giro ? 'turni a giro: in ultimi_eventi trovi cosa ha dichiarato ogni giocatore; risolvi le azioni di tutti insieme, dando a ognuno il suo momento' : undefined,
       luogo_attuale: luogo ? { nome: luogo.nome, tipo: luogo.tipo, edifici: luogo.edifici.map(e => ({ id: e.id, nome: e.nome, stato: e.stato })), oggetti_di_scena: (luogo.oggetti || []).slice(0, 60).map(o => ({ id: o.id, tipo: o.nome || o.tipo, x: o.x, y: o.y, stato: o.stato !== 'integro' ? o.stato : undefined })), storia: (luogo.storia || []).slice(-8) } : null,
       luoghi_conosciuti: Object.values(luoghi).map(l => l.nome),
       personaggi: pgs,

@@ -59,6 +59,23 @@ export const COMPAGNI = [
 ];
 // Avventure pronte (testi originali)
 export const AVVENTURE = {
+  // per chi non ha mai giocato: un quarto d'ora, tre scene, e il master spiega una cosa alla volta
+  primi: {
+    titolo: 'Primi passi: topi in cantina', livelli: '1', tipo: 'primi passi', guidata: true,
+    sinossi: 'Avventura di un quarto d\'ora per chi non ha mai giocato di ruolo. Alla locanda del Gallo Nero qualcosa rosicchia le botti in cantina e l\'ostessa Nella offre cena e letto a chi va a vedere. Si impara a parlare con i personaggi, a fare una prova con il dado, a muoversi sulla mappa e a combattere.',
+    fazioni: [],
+    segreti: ['In cantina ci sono due ratti giganti, entrati da un buco nel muro dietro le botti: tappato il buco, non tornano.', 'Dietro la botte più vecchia c\'è un cofanetto dimenticato dal nonno di Nella, con 12 monete d\'oro e un anello d\'argento: Nella lascia tenere le monete a chi le riporta l\'anello.', 'Il gatto della locanda, Pepe, è sparito da due giorni: è chiuso per sbaglio in cantina, spaventato ma vivo, sopra una trave.'],
+    ricompensa: 'Cena calda, un letto, 12 monete d\'oro del cofanetto e 50 PX a personaggio; se salvano il gatto Pepe, Nella regala una pozione di guarigione.',
+    scene: [
+      { id: 'locanda', luogo: 'Locanda del Gallo Nero', tipo: 'taverna', obiettivo: 'Parlare con l\'ostessa Nella e accettare di scendere in cantina. Qui si impara a dire cosa si fa e a parlare con un personaggio.', png: 'Nella l\'ostessa (pratica, parla svelta, si asciuga sempre le mani); un vecchio avventore che giura di aver sentito squittire "forte come un cane"', indizi: 'un sacco di farina rosicchiato vicino alla porta della cantina; la ciotola del gatto è piena da due giorni',
+        leggi: 'Fuori piove, e la Locanda del Gallo Nero profuma di pane e di legna. Avete appena posato lo zaino quando da sotto il pavimento arriva un tonfo, poi uno squittio lungo. L\'ostessa sbuffa, posa il mestolo e vi guarda: "Voi avete l\'aria di gente che non ha paura del buio. C\'è qualcosa nella mia cantina che mi mangia le botti. Andate a vedere, e stasera cena e letto li offro io."' },
+      { id: 'cantina', luogo: 'Cantina del Gallo Nero', tipo: 'interno', obiettivo: 'Scendere, guardarsi intorno (una prova di Percezione o di Indagare, facile) e affrontare i due ratti giganti. Qui si impara la prova con il dado, a muoversi sulla mappa e il combattimento a turni.', png: 'Pepe il gatto (soffia dalla trave, non scende finché ci sono i ratti)', indizi: 'segni di denti sulle doghe, un buco nel muro grande come un secchio dietro le botti, un miagolio dall\'alto',
+        incontro: [{ nome: 'Ratto gigante', numero: 2, gs: '1/8', pf: 5, ca: 12 }],
+        leggi: 'La scala scricchiola a ogni gradino. Sotto, la luce della vostra lanterna scopre file di botti, sacchi e ragnatele. C\'è odore di vino versato. Per un momento, niente. Poi dietro la botte più grande qualcosa si muove, e due paia di occhi rossi si accendono nel buio.' },
+      { id: 'ritorno', luogo: 'Locanda del Gallo Nero', tipo: 'taverna', obiettivo: 'Tornare da Nella, raccontare, ricevere la ricompensa. Il master fa i complimenti e dice in una frase come continuare: creare una campagna vera e invitare gli amici con il QR.', png: 'Nella l\'ostessa (ora sorride); Pepe il gatto, se salvato',
+        leggi: 'Quando risalite, la sala si è riempita. Nella vi vede sporchi di polvere e di ragnatele e batte le mani: "Allora? Devo comprare botti nuove o un gatto più grosso?"' }
+    ]
+  },
   miniera: {
     titolo: 'La miniera dei goblin', livelli: '1-3', tipo: 'avventura',
     sinossi: 'Da una settimana la miniera di Pietrarossa è caduta in mano ai goblin del capo Rugnak: i minatori sono fuggiti, uno di loro (Brann, un nano) è prigioniero e il villaggio rischia la fame. La sindaca Gerlinda offre una ricompensa a chi libera la miniera. Avventura per personaggi di livello 1-3, da giocare in una serata.',

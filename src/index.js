@@ -21,6 +21,9 @@ export default {
     // grafica comprata (privata): solo per chi è membro della campagna
     const gr = url.pathname.match(/^\/tavolo\/([A-Za-z0-9]{6,12})\/grafica\/atlante\.(png|json)$/);
     if (req.method === 'GET' && gr) return env.TAVOLO.get(env.TAVOLO.idFromName(gr[1].toUpperCase())).fetch(req);
+    // di che cosa parla l'ultima notifica (serata o turno): lo chiede il telefono quando la riceve, perché la notifica viaggia vuota
+    const av = url.pathname.match(/^\/tavolo\/([A-Za-z0-9]{6,12})\/avviso$/);
+    if (req.method === 'GET' && av) return env.TAVOLO.get(env.TAVOLO.idFromName(av[1].toUpperCase())).fetch(req);
     const t = url.pathname.match(/^\/tavolo\/([A-Za-z0-9]{6,12})\/ws$/);
     if (req.method === 'GET' && t) return apriTavolo(req, env, t[1]);
     if (req.method === 'GET' && url.pathname === '/turn') return turn(req, env);
