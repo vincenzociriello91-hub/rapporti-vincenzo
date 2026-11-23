@@ -3,7 +3,7 @@
 // e fa da ponte per la voce (segnalazione WebRTC) e per il master AI (Gemini, chiave solo qui).
 import { DurableObject } from 'cloudflare:workers';
 import { codiceCasuale, sha, testo } from './tavolo-util.js';
-import { COMPAGNI_ANIMALI, STANZE_BASE, MESTIERI, RICETTE, SEGRETI, senzaRegia, TIPI_EVENTO, TATTICHE, RISERVA, PROMEMORIA, b64url, COPIA, PER_SPETTATORI, SILENZIO, REAZIONI, MAZZO, DIFFICOLTA, LINGUE, SUONI, ATTESA_MASTER, SCENE_EN, COMPAGNI, AVVENTURE, trofei, CATALOGHI, tipoNegozio, prezzoBase, SOGLIE_PX, incontroCasuale, tesoroCasuale, pngCasuale, UMANOIDI, nomeMostro, stagione, tiraFormula, RARI } from './tavolo-dati.js';
+import { dataGioco, STAGIONI, COMPAGNI_ANIMALI, STANZE_BASE, MESTIERI, RICETTE, SEGRETI, senzaRegia, TIPI_EVENTO, TATTICHE, RISERVA, PROMEMORIA, b64url, COPIA, PER_SPETTATORI, SILENZIO, REAZIONI, MAZZO, DIFFICOLTA, LINGUE, SUONI, ATTESA_MASTER, SCENE_EN, COMPAGNI, AVVENTURE, trofei, CATALOGHI, tipoNegozio, prezzoBase, SOGLIE_PX, incontroCasuale, tesoroCasuale, pngCasuale, UMANOIDI, nomeMostro, stagione, tiraFormula, RARI } from './tavolo-dati.js';
 import { chiamaGemini, sintesiVocale, STILE_IMG, STILI_IMG, generaImmagine, chiamaClaude, leggiJSON } from './tavolo-ai.js';
 import { chiaveLuogo, indovinaTipo, W, H, generaLuogo, ARREDI_V, griglia, vicine, percorso, vede, MOVIBILI, celleArea } from './tavolo-mappe.js';
 export * from './tavolo-util.js';
@@ -170,6 +170,23 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
       const m2 = await this.get('mostri', {}); m2[chiave] = id; await this.put('mostri', m2);
       this.tutti({ t: 'mostri', mostri: m2 });
     } finally { this.inCorso.delete('m:' + chiave); }
+  }
+  // ritratto illustrato del personaggio, dalla sua scheda (razza, classe, aspetto, equipaggiamento), nello stile della campagna
+  async ritrattoPg(ws, io, me, capo, m) {
+    const per = m.per && capo ? String(m.per) : io; if (me.ruolo === 'spettatore') return;
+    const p = await this.get('pg:' + per); if (!p) return;
+    if (this.inCorso?.has('r:' + per)) return; (this.inCorso = this.inCorso || new Set()).add('r:' + per);
+    try {
+      const a = p.aspetto || {}, ind = (p.equip || []).filter(e => e.indossato).map(e => e.nome).slice(0, 5).join(', ');
+      const r = await this.g({ contents: [{ parts: [{ text: `Describe in English, max 45 words, the look of this D&D player character for a portrait painting (face, hair, build, clothes and gear, expression). Only the description.\n${JSON.stringify({ nome: p.nome, razza: p.razza, classe: p.classe, livello: p.livello, allineamento: p.allineamento, aspetto: a, equipaggiamento: ind, storia: p.storia ? String(p.storia).slice(0, 300) : undefined })}` }] }], generationConfig: { temperature: 0.7 } });
+      const desc = r.ok ? ((await r.json()).candidates?.[0]?.content?.parts?.map(x => x.text || '').join('') || '').trim().slice(0, 400) : '';
+      const stile = STILI_IMG[(await this.get('campagna'))?.stileImg] || STILE_IMG;
+      const id = await this.immagineSalvata(`${stile}Portrait, head and shoulders, of ${desc || `a ${p.razza} ${p.classe}`}, Dungeons and Dragons hero, highly detailed face, dark simple background`, 'quotaRitratti', 12);
+      if (!id) return this.invia(ws, { t: 'avviso', msg: 'Oggi i ritratti sono finiti o il servizio delle immagini non risponde: riprova domani', errore: true });
+      const p2 = await this.get('pg:' + per); if (!p2) return; const vecchio = p2.ritratto; p2.ritratto = id; await this.put('pg:' + per, p2);
+      if (vecchio && /^i[a-z0-9]+$/.test(vecchio)) await this.ctx.storage.delete('img:' + vecchio);
+      this.tutti({ t: 'scheda', per, pg: p2, nota: 'ha un nuovo ritratto', da: io });
+    } finally { this.inCorso.delete('r:' + per); }
   }
   async disegnaVolto(png) {
     const nome = testo(png, 40).trim(); if (!nome || /banditore/i.test(nome)) return;
@@ -409,7 +426,7 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
   async eventoMondo(e) {
     const t = Date.now();
     switch (e.tipo) {
-      case 'missione': { const l = await this.get('missioni', []), titolo = testo(e.titolo, 80); if (!titolo || l.some(x => x.titolo === titolo)) return; l.push({ id: 'q' + t.toString(36), titolo, descrizione: testo(e.descrizione, 300), ricompensa: testo(e.ricompensa, 80), stato: 'aperta', t }); await this.put('missioni', l.slice(-12)); await this.annuncia(`Nuova missione sulla bacheca: ${titolo}.`); break; }
+      case 'missione': { const l = await this.get('missioni', []), titolo = testo(e.titolo, 80); if (!titolo || l.some(x => x.titolo === titolo)) return; const oggi = (await this.get('mondo', {}))?.calendario?.giorno || 1, entro = Math.max(0, Math.min(120, Number(e.entro) || 0)); l.push({ id: 'q' + t.toString(36), titolo, descrizione: testo(e.descrizione, 300), ricompensa: testo(e.ricompensa, 80), stato: 'aperta', t, ...(entro ? { scadenza: oggi + entro } : {}) }); await this.put('missioni', l.slice(-12)); await this.annuncia(`Nuova missione sulla bacheca: ${titolo}.`); break; }
       case 'missione_fatta': { const l = await this.get('missioni', []), q = l.find(x => x.titolo === testo(e.titolo, 80)); if (!q) return; q.stato = 'completata'; await this.put('missioni', l); await this.annuncia(`Missione completata: ${q.titolo}!`); this.tutti({ t: 'suono', nome: 'vittoria' }); break; }
       case 'voto': { const opzioni = (Array.isArray(e.opzioni) ? e.opzioni : []).map(o => testo(o, 60)).filter(Boolean).slice(0, 4); if (opzioni.length < 2) return; await this.put('voto', { domanda: testo(e.domanda, 160), opzioni, voti: {}, t }); break; }
       case 'enigma': { if (!e.domanda || !e.risposta) return; await this.put('enigma', { domanda: testo(e.domanda, 400), risposta: testo(e.risposta, 60), indizio: testo(e.indizio, 160), tentativi: 0, t }); break; }
@@ -590,7 +607,14 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
       for (let r = 4; r < 12 && !fatto; r++) for (let t = 0; t < 24 && !fatto; t++) { const a = (k * 1.7 + t) * 0.5, x = cx + Math.round(Math.cos(a) * r), y = cy + Math.round(Math.sin(a) * r * 0.7); if (libera(x, y)) { const nome = (mo.numero || 1) > 1 ? `${testo(mo.nome, 24)} ${i + 1}` : testo(mo.nome, 30); seg['n_' + Date.now().toString(36) + k] = { x, y, nome, colore: '#d84b3c', tipo: 'nemico', pf: Number(mo.pf) || 10, pfMax: Number(mo.pf) || 10, ca: Number(mo.ca) || 12 }; fatto = true; k++; } }
     }
     await this.put('segnalini', seg); this.tutti({ t: 'segnalini', segnalini: seg });
-    for (const mo of mostri.slice(0, 6)) this.ctx.waitUntil(this.disegnaMostro(mo.nome));
+    for (const mo of mostri.slice(0, 6)) { this.ctx.waitUntil(this.disegnaMostro(mo.nome)); await this.bestia(mo.nome, 'visti', Math.min(8, mo.numero || 1)); }
+  }
+  // carte da collezione: ogni tipo di mostro incontrato e sconfitto dal gruppo ("Goblin 2" conta come "Goblin")
+  async bestia(nome, campo, quanti = 1) {
+    const n = testo(String(nome || '').replace(/\s+\d+$/, ''), 40).trim(); if (!n) return;
+    const b = await this.get('bestiario', {}), x = b[n] || { visti: 0, sconfitti: 0, prima: Date.now() };
+    x[campo] = (x[campo] || 0) + quanti; if (campo === 'sconfitti' && x.visti < x.sconfitti) x.visti = x.sconfitti;
+    b[n] = x; if (Object.keys(b).length > 150) return; await this.put('bestiario', b); this.tutti({ t: 'bestiario', bestiario: b });
   }
 
   // ---------- libro della campagna: riepiloghi, illustrazioni e narrazioni ----------
@@ -712,7 +736,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
       mostri: await this.get('mostri', {}), volti: await this.get('volti', {}), negozio: await this.get('negozio', null),
       png: await this.get('png', {}), memoriale: await this.get('memoriale', []), ...(await this.mondoVivo(vedeSegreti)), serate: await this.get('serate', []), giocoTaverna: await this.get('giocoTaverna', null), noteMappa: { luogo: await this.get('luogoAttuale'), note: await this.get('note:' + await this.get('luogoAttuale'), []) }, disegni: { luogo: attuale, disegni: await this.get('disegni:' + attuale, []) }, avventure: Object.entries(AVVENTURE).map(([id, a]) => ({ id, titolo: a.titolo, livelli: a.livelli, tipo: a.tipo, seguito: a.seguito })),
       avventura: vedeSegreti ? await this.avventuraPerMaster() : undefined,
-      cronaca: await this.get('cronaca', ''), appunti: vedeSegreti ? await this.get('appunti', '') : undefined, fatti: vedeSegreti ? await this.get('fatti', []) : undefined, giro: await this.statoGiro(), mondoChiave: io?.admin ? await this.get('mondoChiave', '') : undefined,
+      cronaca: await this.get('cronaca', ''), appunti: vedeSegreti ? await this.get('appunti', '') : undefined, fatti: vedeSegreti ? await this.get('fatti', []) : undefined, giro: await this.statoGiro(), bestiario: await this.get('bestiario', {}), mondoChiave: io?.admin ? await this.get('mondoChiave', '') : undefined,
       memoria: vedeSegreti ? memoria : undefined, suggerimenti: vedeSegreti ? suggerimenti.slice(-30) : undefined,
       costi: vedeSegreti ? await this.get('costi', null) : undefined
     };
@@ -753,6 +777,13 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
           if (me.ruolo === 'spettatore') return; const t = testo(m.testo, 400).trim(), a = String(m.a || ''), membri = await this.get('membri', {}); if (!t || !membri[a] || a === io) return;
           const dest = this.wsDi(a); if (!dest) return this.invia(ws, { t: 'avviso', msg: `${membri[a].nome} non è collegato: il messaggio non è partito`, errore: true });
           const msg = { t: 'sussurro', da: io, a, nome: me.nome, perNome: membri[a].nome, testo: t, quando: Date.now() }; this.invia(dest, msg); return this.invia(ws, msg);
+        }
+        case 'ritratto': return this.ritrattoPg(ws, io, me, capo, m);
+        case 'al_master': { // un giocatore dice una cosa solo al master AI (un'azione di nascosto, un sospetto): gli altri non la vedono
+          if (me.ruolo !== 'giocatore' || (await this.get('campagna')).masterTipo !== 'ai') return; const t = testo(m.testo, 400).trim(); if (!t) return;
+          const p = await this.get('pg:' + io), l = await this.get('segretiMaster', []); l.push({ pg: io, nome: p?.nome || me.nome, testo: t, t: Date.now() }); await this.put('segretiMaster', l.slice(-12));
+          this.invia(ws, { t: 'sussurro', da: io, a: 'master', nome: me.nome, perNome: 'il master', testo: t, quando: Date.now() });
+          return this.chiamaMaster(io, me, true);
         }
         case 'aiuto': { // azione Aiuto: chi sta per tirare una prova tira con vantaggio
           if (me.ruolo !== 'giocatore') return; const per = String(m.per || ''), membri = await this.get('membri', {}), p = await this.get('pg:' + per), mio = await this.get('pg:' + io); if (!membri[per] || !p || per === io) return;
@@ -798,7 +829,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
         case 'serata_nuova': case 'serata_risposta': case 'serata_togli': return this.serata(io, me, capo, m);
         case 'push_chiave': return this.invia(ws, { t: 'push_chiave', pub: (await this.manuale('vapid'))?.pub || null });
         case 'push_iscrivi': { const e = String(m.endpoint || ''); let u; try { u = new URL(e); } catch { return; } if (u.protocol !== 'https:' || !/(^|\.)(fcm\.googleapis\.com|push\.services\.mozilla\.com|notify\.windows\.com|push\.apple\.com)$/.test(u.hostname)) return; const iscritti = await this.get('push', {}); iscritti[io] = e; await this.put('push', iscritti); return this.invia(ws, { t: 'push_ok' }); }
-        case 'missione_nuova': if (!capo) return; return this.eventoMondo({ tipo: 'missione', titolo: m.titolo, descrizione: m.descrizione, ricompensa: m.ricompensa });
+        case 'missione_nuova': if (!capo) return; return this.eventoMondo({ tipo: 'missione', titolo: m.titolo, descrizione: m.descrizione, ricompensa: m.ricompensa, entro: m.entro });
         case 'voto_apri': if (!capo) return; return this.eventoMondo({ tipo: 'voto', domanda: m.domanda, opzioni: m.opzioni });
         case 'voto': return this.vota(io, Number(m.scelta));
         case 'voto_chiudi': if (!capo) return; return this.chiudiVoto();
@@ -1020,7 +1051,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     if (JSON.stringify(m.pg).length > 60000) return;
     m.pg = JSON.parse(JSON.stringify(m.pg).replace(/</g, '‹')); // la scheda arriva dal telefono di un giocatore: niente HTML nei suoi campi (anche quelli numerici) verso gli altri
     const primaPg = await this.get('pg:' + per);
-    m.pg.segreto = primaPg?.segreto || (m.pg.nome ? this.segretoNuovo() : undefined); m.pg.sogni = primaPg?.sogni; // segreti e sogni li scrive solo il server
+    m.pg.segreto = primaPg?.segreto || (m.pg.nome ? this.segretoNuovo() : undefined); m.pg.sogni = primaPg?.sogni; m.pg.ritratto = primaPg?.ritratto; // segreti, sogni e ritratto illustrato li scrive solo il server
     await this.put('pg:' + per, m.pg);
     await this.contaPf(per, primaPg, m.pg);
     this.tutti({ t: 'scheda', per, pg: m.pg, nota: m.nota ? testo(m.nota, 300) : null, da: io });
@@ -1064,7 +1095,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
       const luogo = await this.get('luogo:' + await this.get('luogoAttuale'));
       if (luogo && x < luogo.w && y < luogo.h) { const presi = new Set(Object.entries(seg).filter(([k]) => k !== id).map(([, s]) => s.y * luogo.w + s.x)); ({ x, y } = vicine(luogo, { x, y }, presi)); }
     }
-    if (m.rimuovi && capo) delete seg[id];
+    if (m.rimuovi && capo) { if (seg[id]?.tipo === 'nemico') await this.bestia(seg[id].nome, 'sconfitti'); delete seg[id]; }
     else {
       const prima = seg[id] || {};
       seg[id] = { ...prima, x, y, nome: testo(m.nome, 30) || prima.nome, colore: m.colore || prima.colore, tipo: m.tipo || prima.tipo || 'pg', pf: m.pf ?? prima.pf, ca: m.ca ?? prima.ca };
@@ -1390,7 +1421,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     for (const [id, mm] of Object.entries(membri)) {
       if (mm.ruolo !== 'giocatore') continue;
       const p = await this.get('pg:' + id);
-      if (p) pgs.push({ id, giocatore: mm.nome, nome: p.nome, storia: p.storia ? p.storia.slice(0, 400) : undefined, razza: p.razza, classe: p.classe, livello: p.livello, pf: `${p.pf}/${p.pfMax}`, ca: p.ca, caratteristiche: p.car, condizioni: p.condizioni || [], equipaggiato: (p.equip || []).filter(e => e.indossato).map(e => e.nome + (e.bonus ? ' +' + e.bonus : '')), oro: p.oro, classi: p.classi, talenti: p.talenti, incantesimi: (p.incantesimi || []).map(i => i.nome), aspetto: p.aspetto ? { altezza: p.aspetto.altezza, peso: p.aspetto.peso, corporatura: p.aspetto.corporatura } : undefined, mestiere: p.mestiere, compagni: p.compagni?.map(a => `${a.nome} (${a.specie})`), obiettivo_segreto: p.segreto && !p.segreto.fatto ? p.segreto.testo : undefined });
+      if (p) pgs.push({ id, giocatore: mm.nome, nome: p.nome, storia: p.storia ? p.storia.slice(0, 400) : undefined, razza: p.razza, classe: p.classe, livello: p.livello, pf: `${p.pf}/${p.pfMax}`, ca: p.ca, caratteristiche: p.car, condizioni: p.condizioni || [], equipaggiato: (p.equip || []).filter(e => e.indossato).map(e => e.nome + (e.bonus ? ' +' + e.bonus : '')), oro: p.oro, classi: p.classi, talenti: p.talenti, incantesimi: (p.incantesimi || []).map(i => i.nome), slot_liberi: (p.slotLiberi || []).some((n, l) => l && n) ? Object.fromEntries(p.slotLiberi.map((n, l) => [`${l}° livello`, n]).filter(([k]) => k !== '0° livello')) : undefined, munizioni: (p.equip || []).filter(e => /^(Frecce|Quadrelli)\b/.test(e.nome)).map(e => `${e.nome} ×${e.qta || 1}`), aspetto: p.aspetto ? { altezza: p.aspetto.altezza, peso: p.aspetto.peso, corporatura: p.aspetto.corporatura } : undefined, mestiere: p.mestiere, compagni: p.compagni?.map(a => `${a.nome} (${a.specie})`), obiettivo_segreto: p.segreto && !p.segreto.fatto ? p.segreto.testo : undefined });
       else pgs.push({ id, giocatore: mm.nome, nome: '(scheda non ancora creata)' });
     }
     return { c, pgs, diario: diario.slice(-40), memoria, luogo, luoghi };
@@ -1429,12 +1460,15 @@ Eventi possibili (solo se accadono davvero):
 {"tipo":"fatto","testo":"una verità nascosta del mondo decisa adesso, max 25 parole"} (lo vedi solo tu, nei prossimi turni lo ritrovi in fatti_decisi)
 {"tipo":"png_ricordo","nome":"Oste Bruno","ricordo":"cosa ha fatto il gruppo con lui o da lui, max 15 parole"} (memoria del PNG: quando il gruppo torna da lui lo saluta ricordandolo) e {"tipo":"png_nota","nome":"Oste Bruno","nota":"cosa si scopre di lui, max 15 parole"} (per la galleria dei PNG: aspetto, carattere, segreti scoperti dal gruppo; solo cose che il gruppo sa davvero)
 {"tipo":"morte","pg":"<id>","motivo":"..."} (solo quando un personaggio muore davvero secondo le regole: va nel memoriale e il giocatore potrà creare un erede)
-{"tipo":"missione","titolo":"...","descrizione":"...","ricompensa":"..."} (missione secondaria facoltativa sulla bacheca, quando il gruppo è in una taverna, villaggio o città: 1-3 alla volta) e {"tipo":"missione_fatta","titolo":"..."}
+{"tipo":"missione","titolo":"...","descrizione":"...","ricompensa":"...","entro":giorni} ("entro" facoltativo: se la missione ha una scadenza nel calendario di gioco; passato il termine diventa scaduta) (missione secondaria facoltativa sulla bacheca, quando il gruppo è in una taverna, villaggio o città: 1-3 alla volta) e {"tipo":"missione_fatta","titolo":"..."}
 {"tipo":"voto","domanda":"...","opzioni":["...","..."]} (quando il gruppo deve decidere insieme: ognuno vota dal telefono)
 {"tipo":"enigma","domanda":"indovinello o rompicapo","risposta":"una o due parole","indizio":"..."} (porte, statue, guardiani: i giocatori rispondono dall'app)
 {"tipo":"nemesi","nome":"...","descrizione":"..."} (il cattivo ricorrente: torna, si ricorda del gruppo, impara) e {"tipo":"nemesi_fuga","motivo":"..."} quando scappa per tornare più forte
 {"tipo":"scelta","descrizione":"...","peso":"buona|cattiva|ambigua"} (scelte morali importanti: cambiano il finale della campagna)
 {"tipo":"sogno","pg":"<id>","testo":"..."} (sogno o visione privata con un indizio segreto: la vede solo quel giocatore)
+{"tipo":"privato","pg":"<id>","testo":"..."} (risposta che legge solo quel giocatore: usala per le azioni_segrete, per esempio l'esito di un furto di nascosto o di ciò che vede solo lui; nella narrazione per tutti non rivelare le azioni_segrete)
+{"tipo":"riposo","lungo":true|false} (quando il gruppo riposa davvero nella storia: lungo = una notte, tornano punti ferita e slot degli incantesimi; breve = un'ora, tornano gli slot del patto)
+{"tipo":"musica","umore":"tensione|mistero|festa|tristezza|calma|epica"} (cambia la musica secondo il momento della scena: un inseguimento, un funerale, una festa al villaggio; il combattimento ha già la sua musica)
 {"tipo":"segreto_fatto","pg":"<id>"} (quando un personaggio realizza il suo obiettivo segreto) 
 {"tipo":"minaccia","nome":"...","descrizione":"..."} (un pericolo che cresce se il gruppo lo ignora) e {"tipo":"minaccia_sventata","nome":"..."}
 {"tipo":"reputazione_luogo","luogo":"nome del luogo","delta":n,"motivo":"..."} (come vi vede la gente di quel luogo: cambia i prezzi dei negozi)
@@ -1461,6 +1495,7 @@ PRIMA PARTITA: chi gioca non ha mai fatto un gioco di ruolo. Frasi corte, niente
       memoria_campagna: memoria || '(inizio della campagna)',
       appunti_del_mondo: (await this.get('appunti', '')) || undefined,
       fatti_decisi: await this.get('fatti', []),
+      azioni_segrete: (await this.get('segretiMaster', [])).map(x => `${x.nome} (pg ${x.pg}), solo a te: ${x.testo}`),
       giro: c.differito ? 'gioco a distanza: i giocatori scrivono a ore di distanza e leggono la tua risposta più tardi. In ultimi_eventi trovi cosa ha dichiarato ognuno: risolvi tutto in una sola narrazione un po\' più ampia del solito, dai a ogni personaggio il suo momento e chiudi con la situazione chiara e una scelta aperta per ciascuno. Chi non ha scritto resta prudente sullo sfondo: non decidere al suo posto' : c.giro ? 'turni a giro: in ultimi_eventi trovi cosa ha dichiarato ogni giocatore; risolvi le azioni di tutti insieme, dando a ognuno il suo momento' : undefined,
       luogo_attuale: luogo ? { nome: luogo.nome, tipo: luogo.tipo, edifici: luogo.edifici.map(e => ({ id: e.id, nome: e.nome, stato: e.stato })), oggetti_di_scena: (luogo.oggetti || []).slice(0, 60).map(o => ({ id: o.id, tipo: o.nome || o.tipo, x: o.x, y: o.y, stato: o.stato !== 'integro' ? o.stato : undefined })), storia: (luogo.storia || []).slice(-8) } : null,
       luoghi_conosciuti: Object.values(luoghi).map(l => l.nome),
@@ -1469,7 +1504,7 @@ PRIMA PARTITA: chi gioca non ha mai fatto un gioco di ruolo. Frasi corte, niente
       combattimento: await this.get('combattimento', null),
       tesoro_del_gruppo: await this.get('gruppo', null),
       stagione_reale: stagione(),
-      calendario_di_gioco: (await this.get('mondo', {}))?.calendario || null,
+      calendario_di_gioco: (c2 => c2 ? { ...c2, ...dataGioco(c2) } : null)((await this.get('mondo', {}))?.calendario), // giorno della settimana, festa di oggi o la prossima: usale nella storia
       fazioni_e_reputazione: (await this.get('mondo', {}))?.fazioni || {},
       valute_locali: (await this.get('mondo', {}))?.valute || {},
       relazioni_tra_personaggi: await this.get('relazioni', {}),
@@ -1487,6 +1522,7 @@ PRIMA PARTITA: chi gioca non ha mai fatto un gioco di ruolo. Frasi corte, niente
       generationConfig: { temperature: 0.85, responseMimeType: 'application/json' }
     });
     if (!r.ok) { this.tutti({ t: 'avviso', msg: r.status === 429 ? 'Il master AI ha finito la quota di oggi: intanto il master improvvisa con le battute di riserva' : `Il master AI non risponde (${r.status}): intanto improvviso io`, errore: true }); return this.battutaDiRiserva(luogo, silenzio); }
+    await this.put('segretiMaster', []); // il master le ha lette: al prossimo turno non tornano (se il master non risponde restano per il turno dopo)
     const j = await r.json();
     const out = leggiJSON(j.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '');
     if (!out) { await this.impara(['Rispondi sempre e solo con il JSON richiesto (narrazione, png, eventi), senza testo fuori dal JSON.'], []); return; }
@@ -1521,6 +1557,19 @@ PRIMA PARTITA: chi gioca non ha mai fatto un gioco di ruolo. Frasi corte, niente
     };
     const n = Math.max(0, Math.min(999, Number(e.quantita) || 0));
     switch (e.tipo) {
+      case 'privato': { const p = await this.get('pg:' + e.pg), t2 = testo(e.testo, 500).trim(); if (!p || !t2) return; return this.invia(this.wsDi(e.pg), { t: 'sussurro', da: 'master', a: e.pg, nome: 'Il master', perNome: p.nome, testo: t2, quando: Date.now() }); }
+      case 'riposo': { // il gruppo riposa nella storia: si aggiornano tutte le schede (slot liberi = quelli che c'erano più quelli spesi)
+        const membri = await this.get('membri', {});
+        for (const [id, mm] of Object.entries(membri)) {
+          if (mm.ruolo !== 'giocatore' || !(await this.get('pg:' + id))) continue;
+          await pgMod(id, p => {
+            const us = p.slotUsati || [], lib = p.slotLiberi || [];
+            if (e.lungo) { p.pf = p.pfMax; p.ferite = []; p.condizioni = (p.condizioni || []).filter(c => c === 'invisibile'); p.slotLiberi = lib.map((n, l) => (n || 0) + (us[l] || 0)); p.slotUsati = []; }
+            else if (p.patto) { const l = p.patto.livello; lib[l] = (lib[l] || 0) + (us[l] || 0); us[l] = 0; p.slotLiberi = lib; p.slotUsati = us; }
+          }, e.lungo ? 'riposo lungo: tornano punti ferita e slot degli incantesimi' : 'riposo breve');
+        }
+        return;
+      }
       case 'danno': return pgMod(e.pg, p => { p.pf = Math.max(-(p.pfMax || 10), (p.pf || 0) - n); if (e.zona) p.ferite = [...(p.ferite || []), { zona: testo(e.zona, 10), t: Date.now() }].slice(-6); }, `subisce ${n} danni${e.motivo ? ' (' + testo(e.motivo, 60) + ')' : ''}`);
       case 'cura': return pgMod(e.pg, p => { p.pf = Math.min(p.pfMax || 1, (p.pf || 0) + n); if (p.pf >= p.pfMax) p.ferite = []; else if ((p.ferite || []).length) p.ferite = p.ferite.slice(1); }, `recupera ${n} punti ferita`);
       case 'condizione': return pgMod(e.pg, p => { const s = new Set(p.condizioni || []); e.attiva === false ? s.delete(e.nome) : s.add(testo(e.nome, 30)); p.condizioni = [...s]; }, `${e.attiva === false ? 'non è più' : 'è'} ${testo(e.nome, 30)}`);
@@ -1533,6 +1582,7 @@ PRIMA PARTITA: chi gioca non ha mai fatto un gioco di ruolo. Frasi corte, niente
       case 'avventura': return this.scenaAvventura(e.scena);
       case 'negozio': if (e.chiudi) { await this.put('negozio', null); return this.tutti({ t: 'negozio', negozio: null }); } return this.apriNegozio(e);
       case 'suono': if (SUONI.includes(e.nome)) this.tutti({ t: 'suono', nome: e.nome }); return;
+      case 'musica': if (['tensione', 'mistero', 'festa', 'tristezza', 'calma', 'epica'].includes(e.umore)) this.tutti({ t: 'musica', umore: e.umore }); return;
       case 'fatto': { const t = testo(e.testo, 200).trim(); if (!t) return; const f = await this.get('fatti', []); if (!f.includes(t)) { f.push(t); await this.put('fatti', f.slice(-40)); } return; }
       case 'sfida_vinta': case 'sfida_persa': { const c = await this.get('campagna'); if (!c.sfida || c.sfida.esito) return; c.sfida.esito = e.tipo === 'sfida_vinta' ? 'vinta' : 'persa'; await this.put('campagna', c); await this.annuncia(c.sfida.esito === 'vinta' ? `Sfida della settimana vinta: ${c.sfida.titolo}!` : `Sfida della settimana persa: ${c.sfida.titolo}. Riprova la prossima volta!`); return this.tutti({ t: 'sfida', sfida: c.sfida }); }
       case 'missione': case 'missione_fatta': case 'voto': case 'enigma': case 'nemesi': case 'nemesi_fuga': case 'scelta': case 'sogno': case 'segreto_fatto': case 'minaccia': case 'minaccia_sventata': case 'reputazione_luogo': case 'compagno': return this.eventoMondo(e);
@@ -1549,7 +1599,11 @@ PRIMA PARTITA: chi gioca non ha mai fatto un gioco di ruolo. Frasi corte, niente
         if (e.delta) { const ev = await this.diario('mondo', `Reputazione con ${f}: ${e.delta > 0 ? '+' : ''}${e.delta}${e.motivo ? ' (' + testo(e.motivo, 80) + ')' : ''}.`, 'master'); this.tutti({ t: 'diario', ev }); }
         return;
       }
-      case 'tempo': { const mo = await this.get('mondo', { fazioni: {}, valute: {}, viaggi: [], notizie: [] }); const cal = mo.calendario || { giorno: 1, stagione: 'primavera' }; cal.giorno += Math.max(0, Math.min(365, Number(e.giorni) || 0)); if (['primavera', 'estate', 'autunno', 'inverno'].includes(e.stagione)) cal.stagione = e.stagione; if (e.ora !== undefined && e.ora !== null && e.ora !== '') cal.ora = Math.max(0, Math.min(23, Number(e.ora) | 0)); if (['sereno', 'nuvoloso', 'pioggia', 'temporale', 'neve', 'nebbia'].includes(e.meteo)) cal.meteo = e.meteo; mo.calendario = cal; await this.put('mondo', mo); this.tutti({ t: 'mondo', mondo: mo }); return; }
+      case 'tempo': { const mo = await this.get('mondo', { fazioni: {}, valute: {}, viaggi: [], notizie: [] }); const cal = mo.calendario || { giorno: 1, stagione: 'primavera' }; const primaG = cal.giorno || 1; cal.giorno = primaG + Math.max(0, Math.min(365, Number(e.giorni) || 0)); cal.inizioStagione = cal.inizioStagione || 1;
+        if (STAGIONI.includes(e.stagione) && e.stagione !== cal.stagione) { cal.stagione = e.stagione; cal.inizioStagione = cal.giorno; } // il master cambia stagione: da oggi si conta da capo
+        else while (cal.giorno - cal.inizioStagione >= 30) { cal.inizioStagione += 30; cal.stagione = STAGIONI[(STAGIONI.indexOf(cal.stagione) + 1) % 4] || 'primavera'; } // passati 30 giorni la stagione cambia da sola
+        const festa = dataGioco(cal).festa; if (festa && cal.giorno !== primaG) await this.annuncia(`Oggi è la ${festa}!`);
+        { const l = await this.get('missioni', []); let cambio = false; for (const q of l) if (q.stato !== 'completata' && q.stato !== 'scaduta' && q.scadenza && cal.giorno > q.scadenza) { q.stato = 'scaduta'; cambio = true; await this.annuncia(`Missione scaduta: ${q.titolo}.`); } if (cambio) { await this.put('missioni', l); await this.aggiornaMondo(); } } if (e.ora !== undefined && e.ora !== null && e.ora !== '') cal.ora = Math.max(0, Math.min(23, Number(e.ora) | 0)); if (['sereno', 'nuvoloso', 'pioggia', 'temporale', 'neve', 'nebbia'].includes(e.meteo)) cal.meteo = e.meteo; mo.calendario = cal; await this.put('mondo', mo); this.tutti({ t: 'mondo', mondo: mo }); return; }
       case 'valuta': { const mo = await this.get('mondo', { fazioni: {}, valute: {}, viaggi: [], notizie: [] }); const v = testo(e.nome, 40); if (!v) return; mo.valute[v] = { cambio: Math.max(0.001, Number(e.cambio) || 1) }; await this.put('mondo', mo); this.tutti({ t: 'mondo', mondo: mo }); return; }
       case 'valuta_pg': return pgMod(e.pg, p => { p.valute = { ...(p.valute || {}), [testo(e.valuta, 40)]: Math.max(0, (p.valute?.[e.valuta] || 0) + (Number(e.quantita) || 0)) }; }, `${Number(e.quantita) >= 0 ? 'ottiene' : 'spende'} ${Math.abs(Number(e.quantita) || 0)} ${testo(e.valuta, 40)}`);
       case 'combattimento': return this.combattimento('master', { nome: 'Master' }, true, { azione: ['inizia', 'prossimo', 'fine'].includes(e.azione) ? e.azione : 'inizia' });
@@ -1557,11 +1611,11 @@ PRIMA PARTITA: chi gioca non ha mai fatto un gioco di ruolo. Frasi corte, niente
       case 'danno_nemico': {
         const seg = await this.get('segnalini', {}); const s2 = seg[e.nemico]; if (!s2) return;
         s2.pf = (s2.pf ?? 10) - n;
-        if (s2.pf <= 0) { await this.conta('gruppo', { nemici: 1 }); delete seg[e.nemico]; const c = await this.get('combattimento'); if (c?.attivo) await this.combattimento('master', {}, true, { azione: 'togli', id: e.nemico }); const ev = await this.diario('combattimento', `${s2.nome} è sconfitto.`, 'master'); this.tutti({ t: 'diario', ev }); }
+        if (s2.pf <= 0) { await this.conta('gruppo', { nemici: 1 }); await this.bestia(s2.nome, 'sconfitti'); delete seg[e.nemico]; const c = await this.get('combattimento'); if (c?.attivo) await this.combattimento('master', {}, true, { azione: 'togli', id: e.nemico }); const ev = await this.diario('combattimento', `${s2.nome} è sconfitto.`, 'master'); this.tutti({ t: 'diario', ev }); }
         await this.put('segnalini', seg); this.tutti({ t: 'segnalini', segnalini: seg }); return;
       }
       case 'png': return e.via ? this.segnalino('master', true, { id: 'p_' + testo(e.nome, 20).replace(/\W+/g, '_'), rimuovi: true }) : this.segnalino('master', true, { id: 'p_' + testo(e.nome, 20).replace(/\W+/g, '_'), x: e.x, y: e.y, nome: testo(e.nome, 40), colore: '#bfae86', tipo: 'png' });
-      case 'nemico': this.ctx.waitUntil(this.disegnaMostro(e.nome)); return this.segnalino('master', true, { id: 'n_' + testo(e.nome, 20).replace(/\W+/g, '_') + '_' + (e.x | 0) + '_' + (e.y | 0), x: e.x, y: e.y, nome: e.nome, colore: '#d84b3c', tipo: 'nemico', pf: Number(e.pf) || undefined, ca: Number(e.ca) || undefined });
+      case 'nemico': this.ctx.waitUntil(this.disegnaMostro(e.nome)); await this.bestia(e.nome, 'visti'); return this.segnalino('master', true, { id: 'n_' + testo(e.nome, 20).replace(/\W+/g, '_') + '_' + (e.x | 0) + '_' + (e.y | 0), x: e.x, y: e.y, nome: e.nome, colore: '#d84b3c', tipo: 'nemico', pf: Number(e.pf) || undefined, ca: Number(e.ca) || undefined });
     }
   }
 

@@ -15,7 +15,7 @@ export const RARI = [{ nome: 'Pozione di guarigione superiore', prezzo: 150 }, {
 export const SEGRETI = ['Sei in cerca di un fratello scomparso: chiedi di lui a ogni PNG importante.', 'Devi una grossa somma a un usuraio: metti da parte 200 monete senza dirlo agli altri.', 'Sei stato cacciato dalla tua gilda: riconquista il loro rispetto con un\'impresa.', 'Hai giurato di proteggere un compagno del gruppo, anche a costo della vita.', 'Colleziona un trofeo da ogni nemico importante sconfitto.', 'Un antico spirito ti parla in sogno: segui i suoi segni.', 'Vuoi diventare famoso: fai in modo che il tuo nome arrivi in ogni città.', 'Cerchi la spada di tuo nonno, perduta in un dungeon della regione.'];
 // il testo da leggere ad alta voce: via le indicazioni di regia "*(tono epico)*", asterischi e titoli markdown
 export function senzaRegia(t) { return String(t ?? '').replace(/\*?\((?:tono|voce|con tono|musica|pausa|sottofondo)[^)]*\)\*?/gi, '').replace(/[*_#`]+/g, '').replace(/[ \t]{2,}/g, ' ').trim(); }
-export const TIPI_EVENTO = ['png_ricordo', 'avventura', 'bottino', 'combattimento', 'compagno', 'condizione', 'cura', 'danno', 'danno_nemico', 'edificio', 'enigma', 'esperienza', 'fazione', 'illustra', 'luogo', 'minaccia', 'minaccia_sventata', 'missione', 'missione_fatta', 'morte', 'negozio', 'nemesi', 'nemesi_fuga', 'nemico', 'oggetto', 'oro', 'png', 'png_nota', 'reputazione', 'reputazione_luogo', 'scelta', 'scena', 'segreto_fatto', 'sfida_persa', 'sfida_vinta', 'sogno', 'suono', 'tempo', 'tiro', 'valuta', 'valuta_pg', 'voto']; // gli eventi che il master AI può usare (quelli di applicaEvento)
+export const TIPI_EVENTO = ['png_ricordo', 'riposo', 'privato', 'musica', 'avventura', 'bottino', 'combattimento', 'compagno', 'condizione', 'cura', 'danno', 'danno_nemico', 'edificio', 'enigma', 'esperienza', 'fazione', 'illustra', 'luogo', 'minaccia', 'minaccia_sventata', 'missione', 'missione_fatta', 'morte', 'negozio', 'nemesi', 'nemesi_fuga', 'nemico', 'oggetto', 'oro', 'png', 'png_nota', 'reputazione', 'reputazione_luogo', 'scelta', 'scena', 'segreto_fatto', 'sfida_persa', 'sfida_vinta', 'sogno', 'suono', 'tempo', 'tiro', 'valuta', 'valuta_pg', 'voto']; // gli eventi che il master AI può usare (quelli di applicaEvento)
 export const TATTICHE = { fuoco: /fuoco|fiamm|incendi|brucio|palla di fuoco/i, ghiaccio: /ghiacci|gelo|congel/i, frecce: /frecc|arco|balestr|tiro da lontano/i, furtivita: /furtiv|nascond|di soppiatto|silenzio|alle spalle/i, magia: /incantesim|lancio|magia|dardo incantato/i, mischia: /spad|ascia|martell|carico|colpisco|attacco corpo/i, trappole: /trappol|imbosc/i, parlare: /convinc|persuad|minacci|ingann|tratt/i, fuga: /scapp|fuggo|ritirat|corro via/i };
 export const RISERVA = {
   scena: {
@@ -37,7 +37,7 @@ export const RISERVA = {
 export const PROMEMORIA = [['giorno', 86400000], ['ora', 3600000]]; // promemoria il giorno prima e un'ora prima
 export function b64url(b) { let s = ''; for (const x of b) s += String.fromCharCode(x); return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
 // cosa entra nella copia della campagna (non i membri con le loro chiavi, non le immagini)
-export const COPIA = /^(pg:|luogo:|note:)|^(campagna|diario|memoria|mondo|png|luoghi|luogoAttuale|segnalini|gruppo|missioni|voto|enigma|nemesi|scelte|minacce|base|serate|riepiloghi|memoriale|relazioni|statistiche|avventura|tattiche|dungeonGiorno|aree|combattimento|negozio|noteMaster|daRiassumere)$/;
+export const COPIA = /^(pg:|luogo:|note:|disegni:)|^(cronaca|appunti|fatti|bestiario|campagna|diario|memoria|mondo|png|luoghi|luogoAttuale|segnalini|gruppo|missioni|voto|enigma|nemesi|scelte|minacce|base|serate|riepiloghi|memoriale|relazioni|statistiche|avventura|tattiche|dungeonGiorno|aree|combattimento|negozio|noteMaster|daRiassumere)$/;
 export const PER_SPETTATORI = ['reazione', 'stato', 'riepiloghi', 'libro', 'statistiche', 'traduci', 'esci', 'impostazioni', 'rtc', 'suggerimento'];
 export const SILENZIO = 4 * 60000; // dopo quanti minuti di silenzio il master AI fa succedere qualcosa
 export const REAZIONI = ['👏', '😂', '😱', '🔥', '❤️', '🎲', '✋'];
@@ -256,4 +256,14 @@ export function tiraFormula(f, modo) {
   }
   const totale = dadi.reduce((a, b) => a + b, 0) + mod;
   return { formula: `${n > 1 ? n : ''}d${facce}${mod ? (mod > 0 ? '+' : '') + mod : ''}`, dadi, scartati, mod, totale, modo: scartati.length ? modo : null, critico: facce === 20 && n === 1 && dadi[0] === 20, fallimento: facce === 20 && n === 1 && dadi[0] === 1 };
+}
+
+// Calendario di gioco: stagioni di 30 giorni, settimane di 7 giorni, una festa per stagione (la stessa regola è in app-regia.js, per lo schermo)
+export const STAGIONI = ['primavera', 'estate', 'autunno', 'inverno'];
+export const GIORNI_SETTIMANA = ['Giorno della Luna', 'Giorno del Fuoco', 'Giorno dell\'Acqua', 'Giorno del Vento', 'Giorno della Terra', 'Giorno delle Stelle', 'Giorno del Sole'];
+export const FESTE = { primavera: [15, 'Festa dei Fiori'], estate: [20, 'Notte dei Fuochi'], autunno: [10, 'Festa del Raccolto'], inverno: [25, 'Notte Lunga'] };
+export function dataGioco(cal) {
+  if (!cal) return null;
+  const g = cal.giorno || 1, gs = g - (cal.inizioStagione || 1) + 1, [gf, festa] = FESTE[cal.stagione] || [0, ''];
+  return { settimana: GIORNI_SETTIMANA[(g - 1) % 7], giornoStagione: gs, festa: gf === gs ? festa : null, prossimaFesta: gf > gs ? { nome: festa, tra: gf - gs } : null };
 }
