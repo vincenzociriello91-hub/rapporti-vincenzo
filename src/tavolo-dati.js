@@ -165,7 +165,7 @@ export const AVVENTURE = {
   }
 };
 // Trofei della serata: a chi ha il numero più alto in ogni voce (almeno 1)
-export const TROFEI = [['critici', 'Mano d\'oro', n => `${n} colpi critici`], ['fallimenti', 'Nato sotto una cattiva stella', n => `${n} fallimenti critici`], ['danniSubiti', 'Muro vivente', n => `${n} danni incassati`], ['cadute', 'Bacio del pavimento', n => n === 1 ? 'a terra una volta' : `a terra ${n} volte`], ['cure', 'Pellaccia', n => `${n} punti ferita recuperati`], ['speso', 'Spendaccione', n => `${n} monete spese`], ['tiri', 'Lanciatore instancabile', n => `${n} dadi tirati`]];
+export const TROFEI = [['critici', 'Mano d\'oro', n => n === 1 ? '1 colpo critico' : `${n} colpi critici`], ['fallimenti', 'Nato sotto una cattiva stella', n => n === 1 ? '1 fallimento critico' : `${n} fallimenti critici`], ['danniSubiti', 'Muro vivente', n => n === 1 ? '1 danno incassato' : `${n} danni incassati`], ['cadute', 'Bacio del pavimento', n => n === 1 ? 'a terra una volta' : `a terra ${n} volte`], ['cure', 'Pellaccia', n => n === 1 ? '1 punto ferita recuperato' : `${n} punti ferita recuperati`], ['speso', 'Spendaccione', n => n === 1 ? '1 moneta spesa' : `${n} monete spese`], ['tiri', 'Lanciatore instancabile', n => n === 1 ? '1 dado tirato' : `${n} dadi tirati`]];
 export function trofei(s, nomi) {
   const out = [];
   for (const [campo, titolo, motivo] of TROFEI) {

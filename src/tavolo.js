@@ -1012,7 +1012,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     const c = await this.get('campagna');
     const id = chiaveLuogo(nome);
     let luogo = await this.luogoCon(id);
-    const nuovo = !luogo;
+    const nuovo = !luogo || !luogo.visite; // i luoghi preparati in anticipo (avventure, prepara_luogo) non sono ancora stati visitati
     if (!luogo) {
       const t = ['citta', 'villaggio', 'taverna', 'dungeon', 'foresta', 'grotta', 'castello', 'porto', 'aperto', 'interno'].includes(tipo) ? tipo : indovinaTipo(nome);
       luogo = generaLuogo(nome, t, c.creata + ':' + id);
