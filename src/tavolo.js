@@ -1001,9 +1001,9 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
       if (m.nome) c.nome = testo(m.nome, 60);
       if (m.masterTipo) c.masterTipo = m.masterTipo === 'umano' ? 'umano' : 'ai';
       if (m.difficolta !== undefined) c.difficolta = DIFFICOLTA[m.difficolta] !== undefined ? m.difficolta : 'normale';
-      if (m.giro !== undefined) { c.giro = !!m.giro; if (!c.giro) await this.put('giroDetti', []); } // turni a giro: il master risponde quando tutti hanno detto la loro
+      if (m.giro !== undefined) { const era = c.giro; c.giro = !!m.giro; if (era && !c.giro && !c.differito) await this.sciogliGiro(); } // turni a giro: il master risponde quando tutti hanno detto la loro
       if (m.stileImg !== undefined) c.stileImg = STILI_IMG[m.stileImg] ? m.stileImg : 'realistico';
-      if (m.differito !== undefined) { c.differito = [6, 12, 24, 48].includes(Number(m.differito)) || (this.env.IMG_FINTA && Number(m.differito) > 0) ? Number(m.differito) : 0; /* nelle prove in locale valgono anche attese di pochi secondi */ if (!c.differito) { await this.put('giroScade', 0); if (!c.giro) await this.put('giroDetti', []); } } // gioco a distanza: ognuno scrive quando può, il master risponde quando hanno scritto tutti o dopo queste ore
+      if (m.differito !== undefined) { const era = c.differito; c.differito = [6, 12, 24, 48].includes(Number(m.differito)) || (this.env.IMG_FINTA && Number(m.differito) > 0) ? Number(m.differito) : 0; /* nelle prove in locale valgono anche attese di pochi secondi */ if (era && !c.differito) { await this.put('giroScade', 0); if (!c.giro) await this.sciogliGiro(); } } // gioco a distanza: ognuno scrive quando può, il master risponde quando hanno scritto tutti o dopo queste ore
       if (m.timerTurno !== undefined) c.timerTurno = [30, 60, 90, 120].includes(Number(m.timerTurno)) ? Number(m.timerTurno) : 0; // clessidra del turno, in secondi (0 = spenta)
       if (m.nuovaSessione) { c.sessione = (c.sessione || 1) + 1; c.invito = codiceCasuale(8); c.invitoSpettatori = codiceCasuale(10); await this.diario('sistema', `Inizia la sessione ${c.sessione}.`); this.ctx.waitUntil(this.evolviMondo(false)); await this.minacceCrescono(); for (const x of this.online()) if (membri[x] && membri[x].sessioneVista !== c.sessione) { membri[x].presenze = (membri[x].presenze || 0) + 1; membri[x].sessioneVista = c.sessione; } await this.put('membri', membri); }
       if (m.ruoli && me.admin) for (const [id, r] of Object.entries(m.ruoli)) if (membri[id] && ['giocatore', 'spettatore', 'master'].includes(r)) membri[id].ruolo = r;
@@ -1338,6 +1338,8 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     const mancanoId = attesi.filter(id => !detti.includes(id));
     return { detti: detti.filter(id => attesi.includes(id)), mancano: mancanoId.map(id => membri[id].nome), mancanoId, differito: c.differito || 0, scade: c.differito ? await this.get('giroScade', 0) : 0 };
   }
+  // si spegne il giro mentre qualcuno aspetta: il master risponde subito a chi aveva già scritto, nessuna mossa resta senza risposta
+  async sciogliGiro() { const d = await this.get('giroDetti', []); await this.put('giroDetti', []); if (d.length) await this.programmaMaster(true); }
   async chiamaMaster(io, me, subito) {
     const c = await this.get('campagna'), comb = await this.get('combattimento', null);
     if (!(c.giro || c.differito) || comb?.attivo || me.ruolo !== 'giocatore') return this.programmaMaster(subito);
