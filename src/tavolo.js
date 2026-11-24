@@ -3,7 +3,7 @@
 // e fa da ponte per la voce (segnalazione WebRTC) e per il master AI (Gemini, chiave solo qui).
 import { DurableObject } from 'cloudflare:workers';
 import { codiceCasuale, sha, testo } from './tavolo-util.js';
-import { INCONTRI_VIAGGIO, dataGioco, STAGIONI, COMPAGNI_ANIMALI, STANZE_BASE, MESTIERI, RICETTE, SEGRETI, senzaRegia, TIPI_EVENTO, TATTICHE, RISERVA, PROMEMORIA, b64url, COPIA, PER_SPETTATORI, SILENZIO, REAZIONI, MAZZO, DIFFICOLTA, LINGUE, SUONI, ATTESA_MASTER, SCENE_EN, COMPAGNI, AVVENTURE, trofei, CATALOGHI, tipoNegozio, prezzoBase, SOGLIE_PX, incontroCasuale, tesoroCasuale, pngCasuale, UMANOIDI, nomeMostro, stagione, tiraFormula, RARI } from './tavolo-dati.js';
+import { INCONTRI_VIAGGIO, dataGioco, STAGIONI, COMPAGNI_ANIMALI, STANZE_BASE, MESTIERI, RICETTE, SEGRETI, senzaRegia, TIPI_EVENTO, TATTICHE, RISERVA, PROMEMORIA, b64url, COPIA, PER_SPETTATORI, SILENZIO, REAZIONI, MAZZO, DIFFICOLTA, LINGUE, SUONI, ATTESA_MASTER, SCENE_EN, COMPAGNI, AVVENTURE, trofei, CATALOGHI, tipoNegozio, prezzoBase, SOGLIE_PX, incontroCasuale, tesoroCasuale, pngCasuale, UMANOIDI, nomeMostro, stagione, tiraFormula, RARI, TRUCCHI, PX_ANIMALE, cresciAnimale, LIVELLI_BASE, RUNE, TRAPPOLE, nuovoRompicapo, rompicapoGiusto, nuovoTorneo, puntiGiro, cacciaDiRiserva, avventuraValida } from './tavolo-dati.js';
 import { chiamaGemini, sintesiVocale, STILE_IMG, STILI_IMG, generaImmagine, chiamaClaude, leggiJSON } from './tavolo-ai.js';
 import { chiaveLuogo, indovinaTipo, W, H, generaLuogo, ARREDI_V, griglia, vicine, percorso, vede, MOVIBILI, celleArea } from './tavolo-mappe.js';
 export * from './tavolo-util.js';
@@ -205,11 +205,14 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
 
   // ---------- avventure pronte: luoghi, PNG, incontri, tesori e segreti preparati ----------
   async avventuraPerMaster() {
-    const avv = await this.get('avventura', null); if (!avv || !AVVENTURE[avv.id]) return null;
-    return { ...avv, ...AVVENTURE[avv.id] };
+    const avv = await this.get('avventura', null), A = await this.datiAvventura(avv?.id); if (!A) return null;
+    return { ...avv, ...A };
   }
+  // avventure pronte e avventure scritte da chi guida la campagna (anche importate da altri gruppi)
+  async datiAvventura(id) { return id ? AVVENTURE[id] || (await this.get('avventureMie', {}))[id] || null : null; }
+  async elencoAvventure() { return [...Object.entries(AVVENTURE), ...Object.entries(await this.get('avventureMie', {}))].map(([id, a]) => ({ id, titolo: a.titolo, livelli: a.livelli, tipo: a.tipo, seguito: a.seguito, autore: a.autore, chiave: a.chiave })); }
   async iniziaAvventura(id) {
-    const A = AVVENTURE[id]; if (!A) return;
+    const A = await this.datiAvventura(id); if (!A) return;
     const c = await this.get('campagna');
     // luoghi preparati una volta, con le loro mappe
     const idx = await this.get('luoghi', {});
@@ -224,7 +227,7 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
     await this.scenaAvventura(A.scene[0].id, true);
   }
   async scenaAvventura(idScena, leggi) {
-    const avv = await this.get('avventura', null), A = AVVENTURE[avv?.id]; if (!A) return;
+    const avv = await this.get('avventura', null), A = await this.datiAvventura(avv?.id); if (!A) return;
     const i = A.scene.findIndex(x => x.id === idScena); if (i < 0) return;
     const sc = A.scene[i];
     avv.scena = i; avv.iniziata = true; await this.put('avventura', avv);
@@ -421,8 +424,12 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
   }
   // ---------- mondo vivo: bacheca, voto, enigmi, nemesi, scelte, sogni, segreti, minacce, reputazione, compagni, casa, mestieri ----------
   async mondoVivo(vedeSegreti) {
-    const [missioni, voto, enigma, nemesi, scelte, minacce, base, mo] = await Promise.all(['missioni', 'voto', 'enigma', 'nemesi', 'scelte', 'minacce', 'base', 'mondo'].map(k => this.get(k, null)));
-    return { missioni: missioni || [], voto, enigma: enigma ? { ...enigma, risposta: vedeSegreti ? enigma.risposta : undefined } : null, nemesi, scelte: scelte || [], minacce: minacce || [], base, reputazioneLuoghi: mo?.reputazioneLuoghi || {}, catalogo: { ricette: RICETTE, stanze: STANZE_BASE, mestieri: MESTIERI, specie: Object.keys(COMPAGNI_ANIMALI) } };
+    const [missioni, voto, enigma, nemesi, scelte, minacce, base, mo, caccia, rompicapo, torneo] = await Promise.all(['missioni', 'voto', 'enigma', 'nemesi', 'scelte', 'minacce', 'base', 'mondo', 'caccia', 'rompicapo', 'torneo'].map(k => this.get(k, null)));
+    return { missioni: missioni || [], voto, enigma: enigma ? { ...enigma, risposta: vedeSegreti ? enigma.risposta : undefined } : null, nemesi, scelte: scelte || [], minacce: minacce || [], base, reputazioneLuoghi: mo?.reputazioneLuoghi || {},
+      // caccia al tesoro: il luogo e gli indizi non ancora decifrati li vede solo chi guida (e il master AI)
+      caccia: caccia ? { ...caccia, luogo: vedeSegreti || caccia.trovato ? caccia.luogo : undefined, indizi: vedeSegreti || caccia.trovato ? caccia.indizi : caccia.indizi.slice(0, caccia.scoperti), totale: caccia.indizi.length, prove: undefined } : null,
+      rompicapo: rompicapo ? { ...rompicapo, soluzione: vedeSegreti ? rompicapo.soluzione : undefined, trappolaNome: TRAPPOLE[rompicapo.trappola]?.nome } : null, torneo,
+      catalogo: { ricette: RICETTE, stanze: STANZE_BASE, mestieri: MESTIERI, specie: Object.keys(COMPAGNI_ANIMALI), livelliBase: LIVELLI_BASE, pxAnimale: PX_ANIMALE, rune: RUNE.map(r => [r[0], r[1]]) } };
   }
   async annuncia(testoEv, tipo = 'sistema') { const ev = await this.diario(tipo, testoEv); this.tutti({ t: 'diario', ev }); }
   async aggiornaMondo() { const per = { false: JSON.stringify({ t: 'mondo_vivo', ...(await this.mondoVivo(false)) }), true: JSON.stringify({ t: 'mondo_vivo', ...(await this.mondoVivo(true)) }) }; for (const ws of this.ctx.getWebSockets()) { const a = ws.deserializeAttachment(); if (a?.membro) try { ws.send(per[!!a.vede]); } catch {} } }
@@ -478,14 +485,177 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
     await this.annuncia(`${chi} prova: «${testo(risposta, 60)}»... non è la risposta.${en.tentativi >= 3 && en.indizio ? ' Indizio: ' + en.indizio : ''}`);
     await this.aggiornaMondo();
   }
-  async baseCompra(io, cosa) {
+  async baseCompra(io, cosa, nome) {
     const g = await this.get('gruppo', { oro: 0, oggetti: [] }), base = await this.get('base', null), p = await this.get('pg:' + io);
-    const prezzo = !base ? 500 : STANZE_BASE[cosa]?.prezzo; if (!prezzo || (base && base.stanze.includes(cosa))) return;
+    if (typeof nome === 'string') { const n = testo(nome, 40).trim(); if (!base || !n) return; base.nome = n; await this.put('base', base); await this.annuncia(`La casa del gruppo ora si chiama «${n}».`); return this.aggiornaMondo(); }
+    const sale = cosa === 'livello' && base ? LIVELLI_BASE[base.livello || 1] : null; // casa → locanda → rocca
+    const prezzo = !base ? 500 : sale ? sale.prezzo : STANZE_BASE[cosa]?.prezzo; if (!prezzo || (base && !sale && base.stanze.includes(cosa))) return;
     if ((g.oro || 0) < prezzo) return this.invia(this.wsDi(io), { t: 'errore', msg: `Servono ${prezzo} mo nel tesoro comune (ora ${g.oro || 0})` });
     g.oro -= prezzo; await this.put('gruppo', g); this.tutti({ t: 'gruppo', gruppo: g });
     if (!base) { await this.put('base', { nome: 'La casa del gruppo', stanze: [], t: Date.now() }); await this.annuncia(`${p?.nome || 'Il gruppo'} compra una casa per il gruppo (500 mo dal tesoro comune).`); }
+    else if (sale) { base.livello = (base.livello || 1) + 1; await this.put('base', base); await this.annuncia(`${base.nome} diventa una ${sale.nome.toLowerCase()}: ${sale.bonus}.`); this.tutti({ t: 'suono', nome: 'vittoria' }); }
     else { base.stanze.push(cosa); await this.put('base', base); await this.annuncia(`Nuova stanza nella casa del gruppo: ${STANZE_BASE[cosa].nome} (${STANZE_BASE[cosa].bonus}).`); }
     await this.aggiornaMondo();
+  }
+
+  // ---------- caccia al tesoro: il master nasconde un tesoro, il gruppo decifra gli indizi e scava nel posto giusto ----------
+  async cacciaNuova(io, capo) {
+    const ora = await this.get('caccia', null); if (ora && !ora.trovato) return this.invia(this.wsDi(io), { t: 'avviso', msg: 'C\'è già una mappa del tesoro da risolvere', errore: true });
+    let da = null;
+    if (!capo) { // un giocatore apre la «Mappa di un tesoro sepolto» del suo inventario
+      const p = await this.get('pg:' + io), k = (p?.equip || []).findIndex(e => /mappa di un tesoro/i.test(e.nome)); if (k < 0) return;
+      if ((p.equip[k].qta || 1) > 1) p.equip[k].qta--; else p.equip.splice(k, 1);
+      await this.put('pg:' + io, p); this.tutti({ t: 'scheda', per: io, pg: p }); da = p.nome;
+    }
+    this.invia(this.wsDi(io), { t: 'avviso', msg: 'Il master disegna la mappa del tesoro…' });
+    const [luoghi, attuale, membri, c] = await Promise.all([this.get('luoghi', {}), this.get('luogoAttuale'), this.get('membri', {}), this.get('campagna')]);
+    const conosciuti = Object.values(luoghi).map(l => ({ nome: l.nome, tipo: l.tipo })), qui = luoghi[attuale]?.nome;
+    let liv = 1; for (const id of Object.keys(membri)) liv = Math.max(liv, (await this.get('pg:' + id))?.livello || 1);
+    let e = null;
+    try { // l'IA scrive indizi su misura; se tarda più di 20 s si usa la riserva, senza far aspettare il gruppo
+      const r = await Promise.race([this.g({ contents: [{ parts: [{ text: `Prepara una caccia al tesoro per una campagna di D&D (${c.ambientazione}). Il tesoro è nascosto in un luogo: scegli uno di questi luoghi conosciuti diverso da quello attuale (${qui || 'nessuno'}): ${conosciuti.map(l => l.nome).join(', ') || 'nessuno'}; oppure inventa un luogo nuovo con un nome evocativo. Scrivi 3 indizi in italiano, frasi brevi, dal più vago al più chiaro: il terzo fa capire il nome esatto del luogo senza scriverlo. Premio adatto al livello ${liv}. Rispondi SOLO JSON: {"titolo":"...","luogo":"nome esatto","indizi":["...","...","..."],"oro":n,"oggetto":"..."}` }] }], generationConfig: { temperature: 0.9, responseMimeType: 'application/json' } }, 'interni'), new Promise(ok => setTimeout(() => ok(null), 20000))]);
+      if (r?.ok) e = leggiJSON((await r.json()).candidates?.[0]?.content?.parts?.map(x => x.text || '').join('') || '');
+    } catch { /* riserva sotto */ }
+    if (!e?.luogo || !Array.isArray(e.indizi) || e.indizi.length < 2) e = cacciaDiRiserva(conosciuti, qui, liv);
+    return this.eventoCaccia({ ...e, da });
+  }
+  async eventoCaccia(e) {
+    const luogo = testo(e.luogo, 60).trim(), indizi = (Array.isArray(e.indizi) ? e.indizi : []).map(x => testo(x, 240).trim()).filter(Boolean).slice(0, 4);
+    if (!luogo || indizi.length < 2) return;
+    const caccia = { titolo: testo(e.titolo, 80) || 'La mappa del tesoro', luogo, indizi, scoperti: 1, oro: Math.max(0, Math.min(5000, Math.round(Number(e.oro ?? e.premio_oro) || 100))), oggetto: testo(e.oggetto ?? e.premio_oggetto, 80) || null, trovato: false, scavi: 0, prove: {}, t: Date.now() };
+    await this.put('caccia', caccia);
+    await this.annuncia(`${e.da ? e.da + ' apre una mappa del tesoro' : 'Il gruppo trova una mappa del tesoro'}: «${caccia.titolo}». Primo indizio: ${indizi[0]}`);
+    this.tutti({ t: 'suono', nome: 'raro' }); return this.aggiornaMondo();
+  }
+  async cacciaDecifra(io) {
+    const c = await this.get('caccia', null), p = await this.get('pg:' + io); if (!c || c.trovato || !p) return;
+    if (c.scoperti >= c.indizi.length) return this.invia(this.wsDi(io), { t: 'avviso', msg: 'Avete già tutti gli indizi: trovate il posto e scavate' });
+    if (Date.now() - (c.prove[io] || 0) < (this.env.IMG_FINTA ? 0 : 120000)) return this.invia(this.wsDi(io), { t: 'avviso', msg: 'Hai appena provato: riprova tra un paio di minuti o lascia provare un compagno' });
+    c.prove[io] = Date.now();
+    const base = await this.get('base', null), bonus = Math.floor(((p.car?.int || 10) - 10) / 2) + (base?.stanze?.includes('biblioteca') ? 2 : 0), d20 = 1 + Math.floor(Math.random() * 20), cd = 10 + 2 * c.scoperti, ok = d20 === 20 || (d20 !== 1 && d20 + bonus >= cd);
+    if (ok) c.scoperti++;
+    await this.put('caccia', c);
+    await this.annuncia(`${p.nome} studia la mappa (Intelligenza ${d20}${bonus >= 0 ? '+' : ''}${bonus} = ${d20 + bonus} contro CD ${cd}): ${ok ? `decifra un nuovo indizio! «${c.indizi[c.scoperti - 1]}»` : 'i segni restano un mistero.'}`);
+    return this.aggiornaMondo();
+  }
+  async cacciaScava(io) {
+    const c = await this.get('caccia', null), p = await this.get('pg:' + io); if (!c || c.trovato || !p) return;
+    const l = await this.get('luogo:' + await this.get('luogoAttuale')), sopra = l?.genitore ? await this.get('luogo:' + l.genitore) : null;
+    c.scavi++;
+    if (![l?.nome, sopra?.nome].some(n => n && chiaveLuogo(n) === chiaveLuogo(c.luogo))) { await this.put('caccia', c); await this.annuncia(`${p.nome} scava ${l ? 'a ' + l.nome : 'qui'}... solo terra e sassi: il tesoro non è qui.`); return this.aggiornaMondo(); }
+    c.trovato = true; c.scoperti = c.indizi.length; await this.put('caccia', c);
+    const g = await this.get('gruppo', { oro: 0, oggetti: [] }); g.oro = (g.oro || 0) + c.oro;
+    if (c.oggetto) { const es = g.oggetti.find(o => o.nome === c.oggetto); if (es) es.qta = (es.qta || 1) + 1; else g.oggetti.push({ nome: c.oggetto, qta: 1 }); }
+    await this.put('gruppo', g); this.tutti({ t: 'gruppo', gruppo: g });
+    await this.conta(io, { tesori: 1 });
+    await this.annuncia(`${p.nome} scava a ${l.nome} e trova il tesoro! ${c.oro} monete d'oro${c.oggetto ? ' e ' + c.oggetto : ''} finiscono nel tesoro comune.`);
+    this.tutti({ t: 'suono', nome: 'vittoria' }); await this.aggiornaMondo(); return this.programmaMaster(true);
+  }
+
+  // ---------- rompicapi da toccare: leve, rune, serrature (il gioco prepara indizi e soluzione, chi sbaglia subisce la trappola) ----------
+  async rompicapoNuovo(e) {
+    const r = { ...nuovoRompicapo(e.forma, e.trappola), titolo: testo(e.titolo, 80) || null };
+    await this.put('rompicapo', r);
+    await this.annuncia(`${r.titolo || 'Un rompicapo'}: davanti a voi ${({ leve: 'quattro leve', rune: 'cinque rune incise nella pietra', serratura: 'una serratura a combinazione' })[r.tipo]}. Attenti: chi sbaglia fa scattare la trappola (${TRAPPOLE[r.trappola].nome}).`);
+    return this.aggiornaMondo();
+  }
+  async rompicapoProva(io, mosse) {
+    const r = await this.get('rompicapo', null), p = await this.get('pg:' + io); if (!r || !p) return;
+    if (rompicapoGiusto(r, mosse)) {
+      await this.put('rompicapo', null); await this.conta(io, { rompicapi: 1 });
+      await this.annuncia(`${p.nome} risolve il rompicapo: ${({ leve: 'le leve scattano', rune: 'le rune si illuminano', serratura: 'la serratura gira' })[r.tipo]} e il passaggio si apre!`);
+      this.tutti({ t: 'suono', nome: 'successo' }); await this.aggiornaMondo(); return this.programmaMaster(true);
+    }
+    r.tentativi++; await this.put('rompicapo', r);
+    const tr = TRAPPOLE[r.trappola], ts = 1 + Math.floor(Math.random() * 20), mod = Math.floor(((p.car?.[tr.car] || 10) - 10) / 2), salvo = ts + mod >= 13, danno = Math.max(1, Math.floor((tiraFormula(tr.danno)?.totale || 4) / (salvo ? 2 : 1)));
+    const prima = { pf: p.pf }; p.pf = Math.max(0, (p.pf || 0) - danno); await this.put('pg:' + io, p); await this.contaPf(io, prima, p);
+    const nota = `la trappola (${tr.nome}) fa ${danno} danni`; this.tutti({ t: 'scheda', per: io, pg: p, nota, da: 'master' });
+    await this.annuncia(`Sbagliato! Scatta la trappola: ${tr.nome}. ${p.nome} (tiro salvezza su ${({ des: 'Destrezza', cos: 'Costituzione' })[tr.car]} ${ts + mod} contro CD 13${salvo ? ', dimezza' : ''}) subisce ${danno} danni.${r.tentativi >= 2 ? ' Rileggete bene gli indizi.' : ''}`);
+    this.tutti({ t: 'suono', nome: 'ferito' }); return this.aggiornaMondo();
+  }
+
+  // ---------- torneo: prove a punti tra i personaggi e due sfidanti del posto ----------
+  tiriSfidanti(tr) { for (const s of tr.sfidanti) { const d20 = 1 + Math.floor(Math.random() * 20); tr.tiri[tr.round]['npc:' + s.nome] = { d20, bonus: s.bonus, tot: d20 + s.bonus, nome: s.nome }; } }
+  async torneo(io, capo, m) {
+    let tr = await this.get('torneo', null);
+    if (m.t === 'torneo_apri') {
+      if (!capo || (tr && !tr.finito)) return;
+      tr = nuovoTorneo(Number(m.prove) || 4); this.tiriSfidanti(tr); await this.put('torneo', tr);
+      await this.annuncia(`Si apre il torneo! ${tr.prove.length} prove: ${tr.prove.map(x => x.icona + ' ' + x.nome).join(', ')}. Sfidanti del posto: ${tr.sfidanti.map(x => x.nome).join(' e ')}. Prima prova: ${tr.prove[0].nome}.`);
+      this.tutti({ t: 'suono', nome: 'tuono' }); return this.aggiornaMondo();
+    }
+    if (!tr) return;
+    if (m.t === 'torneo_chiudi') { if (!capo) return; await this.put('torneo', null); await this.annuncia('Il torneo è chiuso.'); return this.aggiornaMondo(); }
+    if (tr.finito) return;
+    const membri = await this.get('membri', {}), giro = tr.tiri[tr.round], prova = tr.prove[tr.round];
+    if (m.t === 'torneo_tira') {
+      const p = await this.get('pg:' + io); if (!p || giro[io]) return;
+      const bonus = Math.floor(((p.car?.[prova.car] || 10) - 10) / 2), d20 = 1 + Math.floor(Math.random() * 20);
+      giro[io] = { d20, bonus, tot: d20 + bonus, nome: p.nome };
+      await this.annuncia(`${prova.icona} ${p.nome}, ${prova.nome}: ${d20}${bonus >= 0 ? '+' : ''}${bonus} = ${d20 + bonus}`);
+      const attesi = []; for (const x of this.online()) if (membri[x]?.ruolo === 'giocatore' && await this.get('pg:' + x)) attesi.push(x);
+      if (attesi.every(x => giro[x])) await this.chiudiGiroTorneo(tr);
+    } else if (m.t === 'torneo_avanti' && capo) await this.chiudiGiroTorneo(tr);
+    await this.put('torneo', tr); return this.aggiornaMondo();
+  }
+  async chiudiGiroTorneo(tr) {
+    const giro = tr.tiri[tr.round], punti = puntiGiro(giro), prova = tr.prove[tr.round];
+    for (const [chi, n] of Object.entries(punti)) tr.punti[chi] = (tr.punti[chi] || 0) + n;
+    tr.nomi = { ...(tr.nomi || {}), ...Object.fromEntries(Object.entries(giro).map(([chi, x]) => [chi, x.nome])) };
+    const ord = Object.entries(giro).sort((a, b) => b[1].tot - a[1].tot);
+    await this.annuncia(`${prova.icona} ${prova.nome}: vince ${ord[0][1].nome} (${ord[0][1].tot}). ${ord.slice(1).map(([, x]) => `${x.nome} ${x.tot}`).join(', ')}.`);
+    tr.round++;
+    if (tr.round < tr.prove.length) { tr.tiri.push({}); this.tiriSfidanti(tr); await this.annuncia(`Prossima prova: ${tr.prove[tr.round].icona} ${tr.prove[tr.round].nome}.`); return; }
+    tr.finito = true;
+    const classifica = Object.entries(tr.punti).sort((a, b) => b[1] - a[1]), [primo, pp] = classifica[0], premio = 20 * Object.keys(tr.punti).length;
+    tr.vincitore = tr.nomi[primo];
+    if (!primo.startsWith('npc:')) { const p = await this.get('pg:' + primo); if (p) { p.oro = (p.oro || 0) + premio; await this.put('pg:' + primo, p); this.tutti({ t: 'scheda', per: primo, pg: p, nota: `vince il torneo: ${premio} mo`, da: 'master' }); await this.conta(primo, { tornei: 1 }); } tr.premio = premio; }
+    await this.annuncia(`🏆 Vince il torneo ${tr.vincitore} con ${pp} punti${tr.premio ? ` e ${premio} monete d'oro di premio` : ': sarà per la prossima volta'}! Classifica: ${classifica.map(([chi, n]) => `${tr.nomi[chi]} ${n}`).join(', ')}.`);
+    this.tutti({ t: 'suono', nome: 'vittoria' });
+  }
+
+  // ---------- animali che crescono: addestramento una volta al giorno (di gioco) ----------
+  async addestra(io, m) {
+    const p = await this.get('pg:' + io), a = p?.compagni?.[Number(m.animale) || 0]; if (!a) return;
+    const cal = (await this.get('mondo', {}))?.calendario, giorno = cal?.giorno ? 'g' + cal.giorno : new Date().toISOString().slice(0, 10);
+    if (a.addestrato === giorno && !this.env.IMG_FINTA) return this.invia(this.wsDi(io), { t: 'avviso', msg: `${a.nome} si è già allenato oggi: riprova domani (nel gioco)` });
+    a.addestrato = giorno;
+    const mod = Math.floor(((p.car?.sag || 10) - 10) / 2), d20 = 1 + Math.floor(Math.random() * 20), cd = 10 + 2 * (a.livello || 1), ok = d20 + mod >= cd, imparati = cresciAnimale(a, ok ? 60 : 15);
+    await this.put('pg:' + io, p); this.tutti({ t: 'scheda', per: io, pg: p });
+    await this.annuncia(`${p.nome} addestra ${a.nome} (Saggezza ${d20 + mod} contro CD ${cd}): ${ok ? 'ottimo allenamento' : 'impara poco, ma si impegna'}.${imparati.length ? ` ${a.nome} sale al livello ${a.livello} e impara: ${imparati.join('; ')}!` : ''}`);
+    if (imparati.length) this.tutti({ t: 'suono', nome: 'livello' });
+  }
+
+  // ---------- avventure scritte da chi guida: salvare, eliminare, condividere con un codice, importare da altri gruppi ----------
+  async avventureMie(ws, me, m) {
+    const mie = await this.get('avventureMie', {}), no = msg => this.invia(ws, { t: 'avviso', msg, errore: true });
+    if (m.t === 'avventura_salva') {
+      const vecchia = mie[m.id], a = avventuraValida(m.avventura, vecchia?.autore || me.nome); if (!a) return no('Serve un titolo e almeno una scena con il luogo e cosa succede');
+      if (!vecchia && Object.keys(mie).length >= 10) return no('Potete tenere al massimo 10 avventure scritte: eliminatene una');
+      const id = vecchia ? m.id : 'mia-' + Date.now().toString(36); mie[id] = { ...a, chiave: vecchia?.chiave, da: vecchia?.da };
+      await this.put('avventureMie', mie); await this.annuncia(`${me.nome} ${vecchia ? 'aggiorna' : 'scrive'} l'avventura «${a.titolo}» (${a.scene.length} ${a.scene.length === 1 ? 'scena' : 'scene'}).`);
+    } else if (m.t === 'avventura_elimina') {
+      if (!mie[m.id]) return; const t = mie[m.id].titolo; delete mie[m.id]; await this.put('avventureMie', mie);
+      if ((await this.get('avventura', null))?.id === m.id) await this.put('avventura', null);
+      await this.annuncia(`${me.nome} elimina l'avventura «${t}».`);
+    } else if (m.t === 'avventura_condividi') {
+      const a = mie[m.id]; if (!a) return; if (m.ritira) delete a.chiave; else a.chiave = a.chiave || codiceCasuale(8); await this.put('avventureMie', mie);
+    } else if (m.t === 'avventura_importa') {
+      const mt = String(m.codice || '').toUpperCase().replace(/[^A-Z0-9-]/g, '').match(/^([A-Z0-9]{6,12})-([A-Z0-9]{8})$/);
+      if (!mt) return no('Codice dell\'avventura non valido: è fatto di due parti unite da un trattino');
+      const altro = this.env.TAVOLO.idFromName(mt[1]); if (altro.equals(this.ctx.id)) return no('Questa avventura è già vostra');
+      if (Object.keys(mie).length >= 10) return no('Potete tenere al massimo 10 avventure scritte: eliminatene una');
+      let w = null; try { w = await (await this.env.TAVOLO.get(altro).fetch('https://tavolo/interno', { method: 'POST', headers: { 'x-tavolo-interno': '1' }, body: JSON.stringify({ azione: 'avventura_condivisa', chiave: mt[2] }) })).json(); } catch { /* sotto */ }
+      const a = w?.ok ? avventuraValida(w.avventura, w.avventura?.autore) : null;
+      if (!a) return no('Avventura non trovata: il codice è sbagliato oppure chi l\'ha scritta non la condivide più');
+      mie['mia-' + Date.now().toString(36)] = { ...a, da: testo(w.campagna, 60) }; await this.put('avventureMie', mie);
+      await this.annuncia(`${me.nome} importa l'avventura «${a.titolo}»${a.autore ? ' scritta da ' + a.autore : ''}.`);
+    }
+    return this.mandaAvventure();
+  }
+  async mandaAvventure() {
+    const membri = await this.get('membri', {}), lista = await this.elencoAvventure(), mie = await this.get('avventureMie', {});
+    for (const ws of this.ctx.getWebSockets()) { const x = this.membroDi(ws); if (!x) continue; const vede = membri[x]?.ruolo === 'master' || membri[x]?.admin; this.invia(ws, { t: 'avventure', avventure: lista.map(({ chiave, ...a }) => vede ? { ...a, chiave } : a), avventureMie: vede ? mie : undefined }); }
   }
   async creaOggetto(ws, io, nomeRicetta) {
     const p = await this.get('pg:' + io), r = RICETTE.find(x => x.nome === nomeRicetta); if (!p || !r) return;
@@ -691,6 +861,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     const ris = o => new Response(JSON.stringify(o), { headers: { 'Content-Type': 'application/json' } });
     if (m.azione === 'manuale_leggi') return ris(await this.get('manuale', { lezioni: [], problemi: [] }));
     if (m.azione === 'mondo_leggi') return ris(await this.mondoDaCondividere(String(m.chiave || '')));
+    if (m.azione === 'avventura_condivisa') { const a = Object.values(await this.get('avventureMie', {})).find(x => x.chiave && x.chiave === String(m.chiave || '')); return ris(a ? { ok: true, avventura: { ...a, chiave: undefined }, campagna: (await this.get('campagna'))?.nome } : { ok: false }); }
     if (m.azione === 'vapid') {
       let k = await this.get('vapid', null);
       if (!k) { const c = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']); const jwk = await crypto.subtle.exportKey('jwk', c.privateKey), raw = new Uint8Array(await crypto.subtle.exportKey('raw', c.publicKey)); k = { jwk, pub: b64url(raw) }; await this.put('vapid', k); }
@@ -765,7 +936,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
       mondo: await this.get('mondo', { fazioni: {}, valute: {}, viaggi: [], notizie: [] }), relazioni: await this.get('relazioni', {}),
       combattimento: await this.combattimentoValido(), aree: await this.get('aree', []), gruppo: await this.get('gruppo', { oro: 0, oggetti: [] }),
       mostri: await this.get('mostri', {}), volti: await this.get('volti', {}), negozio: await this.get('negozio', null),
-      png: await this.get('png', {}), memoriale: await this.get('memoriale', []), ...(await this.mondoVivo(vedeSegreti)), serate: await this.get('serate', []), giocoTaverna: await this.get('giocoTaverna', null), noteMappa: { luogo: await this.get('luogoAttuale'), note: await this.get('note:' + await this.get('luogoAttuale'), []) }, disegni: { luogo: attuale, disegni: await this.get('disegni:' + attuale, []) }, avventure: Object.entries(AVVENTURE).map(([id, a]) => ({ id, titolo: a.titolo, livelli: a.livelli, tipo: a.tipo, seguito: a.seguito })),
+      png: await this.get('png', {}), memoriale: await this.get('memoriale', []), ...(await this.mondoVivo(vedeSegreti)), serate: await this.get('serate', []), giocoTaverna: await this.get('giocoTaverna', null), noteMappa: { luogo: await this.get('luogoAttuale'), note: await this.get('note:' + await this.get('luogoAttuale'), []) }, disegni: { luogo: attuale, disegni: await this.get('disegni:' + attuale, []) }, avventure: (await this.elencoAvventure()).map(({ chiave, ...a }) => vedeSegreti ? { ...a, chiave } : a), avventureMie: vedeSegreti ? await this.get('avventureMie', {}) : undefined,
       avventura: vedeSegreti ? await this.avventuraPerMaster() : undefined,
       cronaca: await this.get('cronaca', ''), appunti: vedeSegreti ? await this.get('appunti', '') : undefined, fatti: vedeSegreti ? await this.get('fatti', []) : undefined, giro: await this.statoGiro(), homebrew: vedeSegreti ? await this.get('homebrew', { mostri: [], oggetti: [] }) : undefined, viaggio: await this.get('viaggio', null), bestiario: await this.get('bestiario', {}), mondoChiave: io?.admin ? await this.get('mondoChiave', '') : undefined,
       memoria: vedeSegreti ? memoria : undefined, suggerimenti: vedeSegreti ? suggerimenti.slice(-30) : undefined,
@@ -874,7 +1045,15 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
         case 'voto': return this.vota(io, Number(m.scelta));
         case 'voto_chiudi': if (!capo) return; return this.chiudiVoto();
         case 'enigma_risposta': return this.rispondiEnigma(io, me, String(m.risposta || ''));
-        case 'base': return this.baseCompra(io, String(m.cosa || ''));
+        case 'base': if (me.ruolo === 'spettatore') return; return this.baseCompra(io, String(m.cosa || ''), m.nome);
+        case 'caccia_nuova': if (me.ruolo === 'spettatore') return; return this.cacciaNuova(io, capo);
+        case 'caccia_decifra': return this.cacciaDecifra(io);
+        case 'caccia_scava': return this.cacciaScava(io);
+        case 'rompicapo_nuovo': if (!capo) return; return this.rompicapoNuovo({ forma: m.forma, trappola: m.trappola, titolo: m.titolo });
+        case 'rompicapo_prova': return this.rompicapoProva(io, m.mosse);
+        case 'torneo_apri': case 'torneo_tira': case 'torneo_avanti': case 'torneo_chiudi': return this.torneo(io, capo, m);
+        case 'addestra': return this.addestra(io, m);
+        case 'avventura_salva': case 'avventura_elimina': case 'avventura_condividi': case 'avventura_importa': if (!capo) return; return this.avventureMie(ws, me, m);
         case 'crea_oggetto': return this.creaOggetto(ws, io, String(m.ricetta || ''));
         case 'mestiere': { const p = await this.get('pg:' + io); if (!p || !MESTIERI[m.mestiere]) return; p.mestiere = m.mestiere; await this.put('pg:' + io, p); return this.tutti({ t: 'scheda', per: io, pg: p }); }
         case 'compagno_nuovo': if (!capo) return; return this.eventoMondo({ tipo: 'compagno', pg: membri[m.per] ? m.per : io, nome: m.nome, specie: m.specie });
@@ -915,7 +1094,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
         }
         case 'avventura_inizia': if (!capo) return; return this.iniziaAvventura(m.id);
         case 'avventura_scena': if (!capo) return; return this.scenaAvventura(m.scena);
-        case 'avventura_leggi': if (!capo) return; { const avv = await this.get('avventura'), sc = AVVENTURE[avv?.id]?.scene.find(x => x.id === m.scena); if (!sc) return; const ev = await this.diario('narrazione', sc.leggi, 'master'); return this.tutti({ t: 'narra', testo: ev.testo, png: '', chi: 'master' }); }
+        case 'avventura_leggi': if (!capo) return; { const avv = await this.get('avventura'), sc = (await this.datiAvventura(avv?.id))?.scene.find(x => x.id === m.scena); if (!sc) return; const ev = await this.diario('narrazione', sc.leggi, 'master'); return this.tutti({ t: 'narra', testo: ev.testo, png: '', chi: 'master' }); }
         case 'statistiche': return this.invia(ws, { t: 'statistiche', ...(await this.statistiche()) });
         case 'mese': return this.invia(ws, { t: 'mese', ...(await this.riepilogoMese(String(m.mese || ''))) });
         case 'sessione_zero': return this.invia(ws, { t: 'sessione_zero', ...(await this.sessioneZero(io, m)) });
@@ -1077,6 +1256,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
       if (m.stileImg !== undefined) c.stileImg = STILI_IMG[m.stileImg] ? m.stileImg : 'realistico';
       if (m.differito !== undefined) { const era = c.differito; c.differito = [6, 12, 24, 48].includes(Number(m.differito)) || (this.env.IMG_FINTA && Number(m.differito) > 0) ? Number(m.differito) : 0; /* nelle prove in locale valgono anche attese di pochi secondi */ if (era && !c.differito) { await this.put('giroScade', 0); if (!c.giro) await this.sciogliGiro(); } } // gioco a distanza: ognuno scrive quando può, il master risponde quando hanno scritto tutti o dopo queste ore
       if (m.timerTurno !== undefined) c.timerTurno = [30, 60, 90, 120].includes(Number(m.timerTurno)) ? Number(m.timerTurno) : 0; // clessidra del turno, in secondi (0 = spenta)
+      if (m.nuovaSessione) { const b = await this.get('base', null), rend = LIVELLI_BASE[(b?.livello || 1) - 1]?.rendita; if (rend) { const g = await this.get('gruppo', { oro: 0, oggetti: [] }); g.oro = (g.oro || 0) + rend; await this.put('gruppo', g); this.tutti({ t: 'gruppo', gruppo: g }); await this.diario('sistema', `${b.nome} rende ${rend} monete d'oro al tesoro comune.`); } }
       if (m.nuovaSessione) { c.sessione = (c.sessione || 1) + 1; c.invito = codiceCasuale(8); c.invitoSpettatori = codiceCasuale(10); await this.diario('sistema', `Inizia la sessione ${c.sessione}.`); this.ctx.waitUntil(this.evolviMondo(false)); await this.minacceCrescono(); for (const x of this.online()) if (membri[x] && membri[x].sessioneVista !== c.sessione) { membri[x].presenze = (membri[x].presenze || 0) + 1; membri[x].sessioneVista = c.sessione; } await this.put('membri', membri); }
       if (m.ruoli && me.admin) for (const [id, r] of Object.entries(m.ruoli)) if (membri[id] && ['giocatore', 'spettatore', 'master'].includes(r)) membri[id].ruolo = r;
       await this.put('campagna', c); await this.put('membri', membri);
@@ -1185,7 +1365,8 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     if (!m.riprendi) {
       const nome = testo(m.nome, 60).trim(), da = await this.get('luogoAttuale'); if (!nome || chiaveLuogo(nome) === da) return;
       const h = [...(da || '') + chiaveLuogo(nome)].reduce((a, ch) => (a * 31 + ch.charCodeAt(0)) >>> 0, 7), giorni = 1 + h % 4, cavallo = !!m.cavallo;
-      v = { verso: nome, giorni: cavallo ? Math.max(1, Math.ceil(giorni / 2)) : giorni, fatti: 0, cavallo, eventi: [], da: (await this.get('luoghi', {}))[da]?.nome || null };
+      const stalla = cavallo && (await this.get('base', null))?.stanze?.includes('stalla'); // cavalcature riposate nella stalla della casa: un giorno in meno
+      v = { verso: nome, giorni: cavallo ? Math.max(1, Math.ceil(giorni / 2) - (stalla ? 1 : 0)) : giorni, fatti: 0, cavallo, eventi: [], da: (await this.get('luoghi', {}))[da]?.nome || null };
       await this.annuncia(`Il gruppo parte ${cavallo ? 'a cavallo ' : ''}verso ${nome}: ${v.giorni === 1 ? 'un giorno' : v.giorni + ' giorni'} di viaggio.`);
     } else if (!v) return;
     const membri = await this.get('membri', {}), livelli = []; for (const [id, mm] of Object.entries(membri)) if (mm.ruolo === 'giocatore') { const p = await this.get('pg:' + id); if (p) livelli.push(p.livello || 1); }
@@ -1494,7 +1675,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
     for (const [id, mm] of Object.entries(membri)) {
       if (mm.ruolo !== 'giocatore') continue;
       const p = await this.get('pg:' + id);
-      if (p) pgs.push({ id, giocatore: mm.nome, nome: p.nome, storia: p.storia ? p.storia.slice(0, 400) : undefined, razza: p.razza, classe: p.classe, livello: p.livello, pf: `${p.pf}/${p.pfMax}`, ca: p.ca, caratteristiche: p.car, condizioni: p.condizioni || [], equipaggiato: (p.equip || []).filter(e => e.indossato).map(e => e.nome + (e.bonus ? ' +' + e.bonus : '')), oro: p.oro, classi: p.classi, talenti: p.talenti, incantesimi: (p.incantesimi || []).map(i => i.nome), slot_liberi: (p.slotLiberi || []).some((n, l) => l && n) ? Object.fromEntries(p.slotLiberi.map((n, l) => [`${l}° livello`, n]).filter(([k]) => k !== '0° livello')) : undefined, munizioni: (p.equip || []).filter(e => /^(Frecce|Quadrelli)\b/.test(e.nome)).map(e => `${e.nome} ×${e.qta || 1}`), aspetto: p.aspetto ? { altezza: p.aspetto.altezza, peso: p.aspetto.peso, corporatura: p.aspetto.corporatura } : undefined, mestiere: p.mestiere, compagni: p.compagni?.map(a => `${a.nome} (${a.specie})`), obiettivo_segreto: p.segreto && !p.segreto.fatto ? p.segreto.testo : undefined });
+      if (p) pgs.push({ id, giocatore: mm.nome, nome: p.nome, storia: p.storia ? p.storia.slice(0, 400) : undefined, razza: p.razza, classe: p.classe, livello: p.livello, pf: `${p.pf}/${p.pfMax}`, ca: p.ca, caratteristiche: p.car, condizioni: p.condizioni || [], equipaggiato: (p.equip || []).filter(e => e.indossato).map(e => e.nome + (e.bonus ? ' +' + e.bonus : '')), oro: p.oro, classi: p.classi, talenti: p.talenti, incantesimi: (p.incantesimi || []).map(i => i.nome), slot_liberi: (p.slotLiberi || []).some((n, l) => l && n) ? Object.fromEntries(p.slotLiberi.map((n, l) => [`${l}° livello`, n]).filter(([k]) => k !== '0° livello')) : undefined, munizioni: (p.equip || []).filter(e => /^(Frecce|Quadrelli)\b/.test(e.nome)).map(e => `${e.nome} ×${e.qta || 1}`), aspetto: p.aspetto ? { altezza: p.aspetto.altezza, peso: p.aspetto.peso, corporatura: p.aspetto.corporatura } : undefined, mestiere: p.mestiere, compagni: p.compagni?.map(a => `${a.nome} (${a.specie}, livello ${a.livello || 1}${a.trucchi?.length ? ', sa fare: ' + a.trucchi.join('; ') : ''})`), obiettivo_segreto: p.segreto && !p.segreto.fatto ? p.segreto.testo : undefined });
       else pgs.push({ id, giocatore: mm.nome, nome: '(scheda non ancora creata)' });
     }
     return { c, pgs, diario: diario.slice(-40), memoria, luogo, luoghi };
@@ -1502,8 +1683,8 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
 
   async turnoMaster() {
     const { c, pgs, diario, memoria, luogo, luoghi } = await this.contestoMaster();
-    const avv = await this.get('avventura', null);
-    if (avv && !avv.iniziata && AVVENTURE[avv.id]) return this.iniziaAvventura(avv.id); // l'avventura pronta parte con la sua scena d'apertura
+    const avv = await this.get('avventura', null), A = await this.datiAvventura(avv?.id);
+    if (avv && !avv.iniziata && A) return this.iniziaAvventura(avv.id); // l'avventura pronta parte con la sua scena d'apertura
     const regole = c.regole === '3.5' ? 'D&D 3.5 (System Reference Document 3.5)' : 'D&D 5ª edizione (SRD 5.1)';
     const istr = `Sei il Dungeon Master di una partita di Dungeons & Dragons giocata online da amici italiani. Parli in italiano, con voce narrante coinvolgente ma concisa: le tue parole vengono lette ad alta voce.
 Regolamento: ${regole}. Applicalo correttamente (prove, CD, tiri salvezza, attacchi, danni). Ambientazione scelta: ${c.ambientazione}.
@@ -1546,6 +1727,9 @@ Eventi possibili (solo se accadono davvero):
 {"tipo":"minaccia","nome":"...","descrizione":"..."} (un pericolo che cresce se il gruppo lo ignora) e {"tipo":"minaccia_sventata","nome":"..."}
 {"tipo":"reputazione_luogo","luogo":"nome del luogo","delta":n,"motivo":"..."} (come vi vede la gente di quel luogo: cambia i prezzi dei negozi)
 {"tipo":"compagno","pg":"<id>","nome":"...","specie":"cane|lupo|falco|gatto|cavallo|pony|mulo|corvo"} (animale compagno o cavalcatura)
+{"tipo":"tesoro_nascosto","titolo":"...","luogo":"nome esatto del luogo","indizi":["vago","più chiaro","chiarissimo"],"oro":n,"oggetto":"..."} (mappa del tesoro: i giocatori decifrano gli indizi e scavano nel luogo giusto; il luogo può essere nuovo) e {"tipo":"tesoro_indizio"} (rivela il prossimo indizio quando lo scoprono giocando)
+{"tipo":"rompicapo","forma":"leve|rune|serratura","trappola":"dardi|fulmine|gas|fossa|lame","titolo":"..."} (porta o scrigno con un meccanismo da risolvere sullo schermo: il gioco prepara indizi e soluzione, chi sbaglia subisce la trappola; quando lo risolvono racconta cosa si apre)
+{"tipo":"torneo"} (si apre un torneo a prove tra i personaggi, per feste, fiere e città)
 {"tipo":"suono","nome":"porta|colpo|magia|monete|pozione|vittoria|sconfitta|raro|ferito|successo"} (effetto sonoro su tutti i telefoni, nei momenti giusti: una porta che si apre, un colpo, un incantesimo, monete, una vittoria)
 {"tipo":"nemico","nome":"Goblin","x":n,"y":n,"pf":7,"ca":15} (segnalino sulla mappa, griglia ${W}x${H})
 {"tipo":"combattimento","azione":"inizia|prossimo|fine"} (inizia quando scoppia uno scontro: l'app tira l'iniziativa e gestisce i turni; "prossimo" quando un PNG o nemico ha finito il suo turno; "fine" quando lo scontro è finito)
@@ -1560,11 +1744,11 @@ Il mondo è vivo (vedi "mondo_vivo"): fai tornare la nemesi nei momenti giusti, 
 {"tipo":"valuta","nome":"Corone di Argentea","cambio":0.5} (valuta locale e quanto vale in monete d'oro) e {"tipo":"valuta_pg","pg":"<id>","valuta":"...","quantita":n}
 Durante il combattimento rispetta l'ordine di iniziativa e gioca tu i turni dei nemici quando tocca a loro.${c.sfida && !c.sfida.esito ? `
 SFIDA DELLA SETTIMANA "${c.sfida.titolo}": ${c.sfida.obiettivo} È un'avventura breve per una serata: prepara subito la scena, tieni il ritmo alto e sii giusto. Quando il giocatore completa l'obiettivo usa {"tipo":"sfida_vinta"}; se il personaggio muore o la sfida non è più possibile usa {"tipo":"sfida_persa"}.` : ''}${c.solitaria ? `
-PARTITA IN SOLITARIA: c'è un solo giocatore. Interpreti anche i suoi compagni alleati (${COMPAGNI.map(x => x.nome + ': ' + x.carattere).join('; ')}): falli parlare con la loro personalità, agire e combattere nel loro turno (descrivi le azioni e usa danno_nemico per i loro colpi), senza rubare la scena al giocatore. Dai qualche suggerimento in più su cosa si può fare e rispondi sempre subito.` : ''}${avv ? `
-AVVENTURA PRONTA "${AVVENTURE[avv.id].titolo}": seguila (trovi scene, segreti e scena attuale in "avventura"), ma lascia libertà ai giocatori e adattala alle loro scelte. Quando il gruppo arriva alla scena successiva usa {"tipo":"avventura","scena":"<id della scena>"}: l'app li porta nel luogo e mette i nemici della scena; poi tu decidi se e quando inizia il combattimento.` : ''}${avv && AVVENTURE[avv.id].guidata ? `
+PARTITA IN SOLITARIA: c'è un solo giocatore. Interpreti anche i suoi compagni alleati (${COMPAGNI.map(x => x.nome + ': ' + x.carattere).join('; ')}): falli parlare con la loro personalità, agire e combattere nel loro turno (descrivi le azioni e usa danno_nemico per i loro colpi), senza rubare la scena al giocatore. Dai qualche suggerimento in più su cosa si può fare e rispondi sempre subito.` : ''}${avv && A ? `
+AVVENTURA PRONTA "${A.titolo}": seguila (trovi scene, segreti e scena attuale in "avventura"), ma lascia libertà ai giocatori e adattala alle loro scelte. Quando il gruppo arriva alla scena successiva usa {"tipo":"avventura","scena":"<id della scena>"}: l'app li porta nel luogo e mette i nemici della scena; poi tu decidi se e quando inizia il combattimento.` : ''}${avv && A.guidata ? `
 PRIMA PARTITA: chi gioca non ha mai fatto un gioco di ruolo. Frasi corte, niente gergo e niente sigle. A ogni tua risposta aggiungi in fondo un solo suggerimento pratico su cosa si può fare adesso nell'app, una cosa alla volta e mai due volte la stessa: scrivere o dire a voce cosa fa il personaggio; rispondere a un personaggio; fare una prova quando la chiedi (compare il tasto Tira); toccare una casella della mappa per muoversi; in combattimento attaccare nel proprio turno e poi premere Fine turno; guardare la Scheda. Fai riuscire le idee sensate, tieni basso il pericolo e non far morire nessuno. Chiedi una prova facile (CD 10) appena arrivano in cantina. Dopo l'ultima scena chiudi l'avventura con i complimenti.` : ''}`;
     const contesto = {
-      avventura: avv ? { titolo: AVVENTURE[avv.id].titolo, sinossi: AVVENTURE[avv.id].sinossi, scena_attuale: AVVENTURE[avv.id].scene[avv.scena]?.id, scene: AVVENTURE[avv.id].scene.map(x => ({ id: x.id, luogo: x.luogo, obiettivo: x.obiettivo, png: x.png, indizi: x.indizi, incontro: x.incontro?.map(n => `${n.numero} ${n.nome}`).join(', ') || null, tesoro: x.tesoro || null })), segreti: AVVENTURE[avv.id].segreti, ricompensa: AVVENTURE[avv.id].ricompensa } : undefined,
+      avventura: avv && A ? { titolo: A.titolo, sinossi: A.sinossi, scena_attuale: A.scene[avv.scena]?.id, scene: A.scene.map(x => ({ id: x.id, luogo: x.luogo, obiettivo: x.obiettivo, png: x.png, indizi: x.indizi, incontro: x.incontro?.map(n => `${n.numero} ${n.nome}`).join(', ') || null, tesoro: x.tesoro || null })), segreti: A.segreti, ricompensa: A.ricompensa } : undefined,
       memoria_campagna: memoria || '(inizio della campagna)',
       appunti_del_mondo: (await this.get('appunti', '')) || undefined,
       fatti_decisi: await this.get('fatti', []),
@@ -1650,7 +1834,11 @@ PRIMA PARTITA: chi gioca non ha mai fatto un gioco di ruolo. Frasi corte, niente
       case 'condizione': return pgMod(e.pg, p => { const s = new Set(p.condizioni || []); e.attiva === false ? s.delete(e.nome) : s.add(testo(e.nome, 30)); p.condizioni = [...s]; }, `${e.attiva === false ? 'non è più' : 'è'} ${testo(e.nome, 30)}`);
       case 'oggetto': return pgMod(e.pg, p => { p.equip = [...(p.equip || []), { nome: testo(e.nome, 60), qta: Math.max(1, n || 1), indossato: false }]; }, `ottiene ${testo(e.nome, 60)}`);
       case 'oro': return pgMod(e.pg, p => { p.oro = Math.max(0, (p.oro || 0) + (Number(e.quantita) || 0)); }, `${Number(e.quantita) >= 0 ? 'guadagna' : 'spende'} ${Math.abs(Number(e.quantita) || 0)} monete d'oro`);
-      case 'esperienza': return pgMod(e.pg, p => { p.px = (p.px || 0) + n; }, `guadagna ${n} punti esperienza`);
+      case 'esperienza': { const nuovi = []; await pgMod(e.pg, p => { p.px = (p.px || 0) + n; for (const a of p.compagni || []) for (const t2 of cresciAnimale(a, n / 2)) nuovi.push(`${a.nome} (livello ${a.livello}) impara: ${t2}`); }, `guadagna ${n} punti esperienza`); if (nuovi.length) await this.annuncia(nuovi.join(' · ')); return; } // gli animali crescono con metà dei PX del padrone
+      case 'tesoro_nascosto': return this.eventoCaccia(e);
+      case 'tesoro_indizio': { const c2 = await this.get('caccia', null); if (!c2 || c2.trovato || c2.scoperti >= c2.indizi.length) return; c2.scoperti++; await this.put('caccia', c2); await this.annuncia(`Nuovo indizio per il tesoro: «${c2.indizi[c2.scoperti - 1]}»`); return this.aggiornaMondo(); }
+      case 'rompicapo': return this.rompicapoNuovo(e);
+      case 'torneo': return this.torneo('master', true, { t: 'torneo_apri' });
       case 'luogo': return this.vai('master', { nome: 'Master' }, e.nome, e.tipoLuogo);
       case 'edificio': return this.modificaLuogo('master', {}, true, { edificio: e.edificio, stato: e.stato });
       case 'scena': return this.scena('master', true, { azione: e.azione, oggetto: e.oggetto, tipo: e.oggetto_tipo || e.tipoOggetto, nome: e.nome, x: e.x, y: e.y });

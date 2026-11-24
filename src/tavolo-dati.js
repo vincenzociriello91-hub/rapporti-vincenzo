@@ -15,7 +15,7 @@ export const RARI = [{ nome: 'Pozione di guarigione superiore', prezzo: 150 }, {
 export const SEGRETI = ['Sei in cerca di un fratello scomparso: chiedi di lui a ogni PNG importante.', 'Devi una grossa somma a un usuraio: metti da parte 200 monete senza dirlo agli altri.', 'Sei stato cacciato dalla tua gilda: riconquista il loro rispetto con un\'impresa.', 'Hai giurato di proteggere un compagno del gruppo, anche a costo della vita.', 'Colleziona un trofeo da ogni nemico importante sconfitto.', 'Un antico spirito ti parla in sogno: segui i suoi segni.', 'Vuoi diventare famoso: fai in modo che il tuo nome arrivi in ogni città.', 'Cerchi la spada di tuo nonno, perduta in un dungeon della regione.'];
 // il testo da leggere ad alta voce: via le indicazioni di regia "*(tono epico)*", asterischi e titoli markdown
 export function senzaRegia(t) { return String(t ?? '').replace(/\*?\((?:tono|voce|con tono|musica|pausa|sottofondo)[^)]*\)\*?/gi, '').replace(/[*_#`]+/g, '').replace(/[ \t]{2,}/g, ' ').trim(); }
-export const TIPI_EVENTO = ['png_ricordo', 'riposo', 'privato', 'musica', 'avventura', 'bottino', 'combattimento', 'compagno', 'condizione', 'cura', 'danno', 'danno_nemico', 'edificio', 'enigma', 'esperienza', 'fazione', 'illustra', 'luogo', 'minaccia', 'minaccia_sventata', 'missione', 'missione_fatta', 'morte', 'negozio', 'nemesi', 'nemesi_fuga', 'nemico', 'oggetto', 'oro', 'png', 'png_nota', 'reputazione', 'reputazione_luogo', 'scelta', 'scena', 'segreto_fatto', 'sfida_persa', 'sfida_vinta', 'sogno', 'suono', 'tempo', 'tiro', 'valuta', 'valuta_pg', 'voto']; // gli eventi che il master AI può usare (quelli di applicaEvento)
+export const TIPI_EVENTO = ['png_ricordo', 'riposo', 'privato', 'musica', 'avventura', 'tesoro_nascosto', 'tesoro_indizio', 'rompicapo', 'torneo', 'bottino', 'combattimento', 'compagno', 'condizione', 'cura', 'danno', 'danno_nemico', 'edificio', 'enigma', 'esperienza', 'fazione', 'illustra', 'luogo', 'minaccia', 'minaccia_sventata', 'missione', 'missione_fatta', 'morte', 'negozio', 'nemesi', 'nemesi_fuga', 'nemico', 'oggetto', 'oro', 'png', 'png_nota', 'reputazione', 'reputazione_luogo', 'scelta', 'scena', 'segreto_fatto', 'sfida_persa', 'sfida_vinta', 'sogno', 'suono', 'tempo', 'tiro', 'valuta', 'valuta_pg', 'voto']; // gli eventi che il master AI può usare (quelli di applicaEvento)
 export const TATTICHE = { fuoco: /fuoco|fiamm|incendi|brucio|palla di fuoco/i, ghiaccio: /ghiacci|gelo|congel/i, frecce: /frecc|arco|balestr|tiro da lontano/i, furtivita: /furtiv|nascond|di soppiatto|silenzio|alle spalle/i, magia: /incantesim|lancio|magia|dardo incantato/i, mischia: /spad|ascia|martell|carico|colpisco|attacco corpo/i, trappole: /trappol|imbosc/i, parlare: /convinc|persuad|minacci|ingann|tratt/i, fuga: /scapp|fuggo|ritirat|corro via/i };
 export const RISERVA = {
   scena: {
@@ -37,7 +37,7 @@ export const RISERVA = {
 export const PROMEMORIA = [['giorno', 86400000], ['ora', 3600000]]; // promemoria il giorno prima e un'ora prima
 export function b64url(b) { let s = ''; for (const x of b) s += String.fromCharCode(x); return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
 // cosa entra nella copia della campagna (non i membri con le loro chiavi, non le immagini)
-export const COPIA = /^(pg:|luogo:|note:|disegni:)|^(homebrew|cronaca|appunti|fatti|bestiario|campagna|diario|memoria|mondo|png|luoghi|luogoAttuale|segnalini|gruppo|missioni|voto|enigma|nemesi|scelte|minacce|base|serate|riepiloghi|memoriale|relazioni|statistiche|avventura|tattiche|dungeonGiorno|aree|combattimento|negozio|noteMaster|daRiassumere)$/;
+export const COPIA = /^(pg:|luogo:|note:|disegni:)|^(homebrew|cronaca|appunti|fatti|bestiario|campagna|diario|memoria|mondo|png|luoghi|luogoAttuale|segnalini|gruppo|missioni|voto|enigma|nemesi|scelte|minacce|base|serate|riepiloghi|memoriale|relazioni|statistiche|avventura|avventureMie|caccia|rompicapo|tattiche|dungeonGiorno|aree|combattimento|negozio|noteMaster|daRiassumere)$/;
 export const PER_SPETTATORI = ['reazione', 'stato', 'riepiloghi', 'libro', 'statistiche', 'traduci', 'esci', 'impostazioni', 'rtc', 'suggerimento'];
 export const SILENZIO = 4 * 60000; // dopo quanti minuti di silenzio il master AI fa succedere qualcosa
 export const REAZIONI = ['👏', '😂', '😱', '🔥', '❤️', '🎲', '✋'];
@@ -270,3 +270,90 @@ export function dataGioco(cal) {
 
 // chi si incontra lungo la strada nei viaggi a tappe (SRD): il numero cresce con il livello del gruppo
 export const INCONTRI_VIAGGIO = [{ nome: 'Lupo', numero: 2, gs: '1/4', pf: 11, ca: 13 }, { nome: 'Bandito', numero: 3, gs: '1/8', pf: 11, ca: 12 }, { nome: 'Goblin', numero: 3, gs: '1/4', pf: 7, ca: 15 }, { nome: 'Orso bruno', numero: 1, gs: '1', pf: 34, ca: 11 }, { nome: 'Ragno gigante', numero: 1, gs: '1', pf: 26, ca: 14 }, { nome: 'Hobgoblin', numero: 2, gs: '1/2', pf: 11, ca: 18 }];
+
+// ---------- animali che crescono: livello, punti e trucchi imparati (metà dei PX del padrone, più l'addestramento) ----------
+export const PX_ANIMALE = [0, 100, 300, 700, 1500]; // soglie dei livelli 2-5
+export const TRUCCHI = {
+  cane: ['Fiuta le tracce: vantaggio per seguire una pista', 'Riporta: va a prendere un oggetto lontano', 'Guardia: di notte nessuno sorprende il gruppo', 'Morso che atterra: il nemico morso cade a terra'],
+  lupo: ['Segue le tracce: vantaggio per seguire una pista', 'Ululato: le bestie piccole scappano', 'Attacco in coppia: vantaggio quando attacca insieme al padrone', 'Morso che atterra: il nemico morso cade a terra'],
+  falco: ['Esplora dall\'alto: avvisa dei pericoli sulla strada', 'Porta messaggi', 'Picchiata: un nemico ha svantaggio al prossimo attacco', 'Occhio lontano: vede chi arriva da chilometri'],
+  gatto: ['Passa inosservato: entra dove nessuno lo vede', 'Sente gli spiriti: avvisa delle presenze invisibili', 'Piccolo ladro: porta via un oggetto leggero', 'Sette vite: una volta per avventura scampa alla morte'],
+  cavallo: ['Galoppo: i viaggi durano meno', 'Non si spaventa: niente paura in battaglia', 'Calcio: 1d6 danni a chi gli sta dietro', 'Porta due persone'],
+  pony: ['Piede sicuro: sentieri di montagna senza rischi', 'Porta carichi', 'Non si spaventa', 'Trova la strada di casa'],
+  mulo: ['Porta carichi pesanti', 'Piede sicuro', 'Testardo: non si spaventa mai', 'Trova l\'acqua nel deserto'],
+  corvo: ['Imita voci', 'Porta messaggi', 'Gazza ladra: ruba oggetti luccicanti', 'Spia dall\'alto: racconta cosa ha visto']
+};
+// aggiunge punti all'animale; a ogni livello nuovo più punti ferita e un trucco: torna l'elenco dei trucchi imparati
+export function cresciAnimale(a, px) {
+  a.livello = a.livello || 1; a.px = Math.max(0, (a.px || 0) + Math.round(px)); a.trucchi = a.trucchi || [];
+  const imparati = [];
+  while (a.livello < 5 && a.px >= PX_ANIMALE[a.livello]) {
+    a.livello++; a.pfMax = (a.pfMax || a.pf || 1) + ((COMPAGNI_ANIMALI[a.specie]?.pf || 4) >= 10 ? 5 : 2); a.pf = a.pfMax;
+    const t = (TRUCCHI[a.specie] || [])[a.trucchi.length]; if (t) { a.trucchi.push(t); imparati.push(t); }
+  }
+  return imparati;
+}
+
+// ---------- casa del gruppo che cresce: casa, locanda, rocca (la rendita entra nel tesoro comune a ogni nuova serata) ----------
+export const LIVELLI_BASE = [{ nome: 'Casa', prezzo: 500, rendita: 0 }, { nome: 'Locanda', prezzo: 1000, rendita: 40, bonus: 'gli avventori pagano: 40 mo nel tesoro comune a ogni nuova serata' }, { nome: 'Rocca', prezzo: 2500, rendita: 100, bonus: 'una fortezza tutta vostra: 100 mo a ogni nuova serata e il rispetto di tutta la regione' }];
+
+// ---------- rompicapi da toccare: leve, rune, serrature; ogni errore fa scattare la trappola ----------
+export const RUNE = [['☉', 'Sole', 'ciò che sorge a est'], ['☽', 'Luna', 'la signora della notte'], ['✶', 'Stella', 'la guida dei marinai'], ['♁', 'Terra', 'ciò che calpestate'], ['♆', 'Mare', 'l\'acqua che non si può bere']];
+export const TRAPPOLE = { dardi: { nome: 'dardi avvelenati', danno: '2d4', car: 'des' }, fulmine: { nome: 'scarica di fulmini', danno: '2d6', car: 'des' }, gas: { nome: 'gas soffocante', danno: '1d8', car: 'cos' }, fossa: { nome: 'botola nel pavimento', danno: '2d6', car: 'des' }, lame: { nome: 'lame rotanti', danno: '2d8', car: 'des' } };
+const ORD = ['prima', 'seconda', 'terza', 'quarta'], COSE = { 1: 'degli occhi di un ciclope', 2: 'delle ali di un pipistrello', 3: 'dei lati di un triangolo', 4: 'delle zampe di un cavallo', 5: 'delle dita di una mano', 6: 'delle zampe di un insetto', 7: 'dei giorni della settimana', 8: 'delle zampe di un ragno' };
+const caso = a => a[Math.floor(Math.random() * a.length)], mescola = a => a.map(x => [Math.random(), x]).sort((p, q) => p[0] - q[0]).map(x => x[1]);
+export function nuovoRompicapo(tipo, trappola) {
+  tipo = ['leve', 'rune', 'serratura'].includes(tipo) ? tipo : caso(['leve', 'rune', 'serratura']);
+  const tr = TRAPPOLE[trappola] ? trappola : caso(Object.keys(TRAPPOLE));
+  let soluzione, indizi;
+  if (tipo === 'leve') {
+    // quattro leve su o giù: frasi vere sulla soluzione, aggiunte finché resta una sola combinazione possibile
+    do soluzione = [0, 1, 2, 3].map(() => Math.random() < 0.5); while ([0, 4].includes(soluzione.filter(Boolean).length));
+    const su = soluzione.filter(Boolean).length, rel = [];
+    for (let i = 0; i < 4; i++) for (let j = i + 1; j < 4; j++) rel.push({ t: `La ${ORD[i]} e la ${ORD[j]} leva stanno ${soluzione[i] === soluzione[j] ? 'nella stessa posizione' : 'in posizioni opposte'}.`, f: c => (c[i] === c[j]) === (soluzione[i] === soluzione[j]) });
+    const frasi = [{ t: su === 1 ? 'Una sola leva è alzata.' : su === 3 ? 'Una sola leva è abbassata.' : 'Due leve sono alzate e due abbassate.', f: c => c.filter(Boolean).length === su }, ...mescola(rel), ...[0, 1, 2, 3].map(i => ({ t: `La ${ORD[i]} leva è ${soluzione[i] ? 'alzata' : 'abbassata'}.`, f: c => c[i] === soluzione[i] }))];
+    let resto = [...Array(16)].map((_, n) => [0, 1, 2, 3].map(i => !!(n >> i & 1))); indizi = [];
+    for (const fr of frasi) { if (resto.length === 1) break; const nuovo = resto.filter(fr.f); if (nuovo.length < resto.length) { indizi.push(fr.t); resto = nuovo; } }
+  } else if (tipo === 'rune') {
+    soluzione = mescola([0, 1, 2, 3, 4]).slice(0, 3);
+    indizi = [`Prima ${RUNE[soluzione[0]][2]}, poi ${RUNE[soluzione[1]][2]}, infine ${RUNE[soluzione[2]][2]}.`];
+  } else {
+    soluzione = [0, 1, 2].map(() => 1 + Math.floor(Math.random() * 8));
+    indizi = soluzione.map((n, i) => { const k = 1 + Math.floor(Math.random() * 5), modi = [`il numero ${COSE[n]}`, `la metà di ${n * 2}`, `${n + k} meno ${k}`]; return `La ${ORD[i]} cifra è ${caso(modi)}.`; });
+  }
+  return { tipo, trappola: tr, soluzione, indizi, tentativi: 0, t: Date.now() };
+}
+export function rompicapoGiusto(r, mosse) {
+  if (!r || !Array.isArray(mosse) || mosse.length !== r.soluzione.length) return false;
+  return r.soluzione.every((x, i) => r.tipo === 'leve' ? !!mosse[i] === x : Number(mosse[i]) === x);
+}
+
+// ---------- torneo tra i personaggi: prove a punti, con due sfidanti del posto (si gioca anche in solitaria) ----------
+export const PROVE_TORNEO = [{ nome: 'Tiro con l\'arco', car: 'des', icona: '🏹' }, { nome: 'Braccio di ferro', car: 'for', icona: '💪' }, { nome: 'Sfida di indovinelli', car: 'int', icona: '🦉' }, { nome: 'Gara di resistenza', car: 'cos', icona: '🍺' }, { nome: 'Gara di eloquenza', car: 'car', icona: '🎭' }, { nome: 'Caccia al cervo bianco', car: 'sag', icona: '🦌' }];
+export const SFIDANTI = [{ nome: 'Brenna la Rossa', bonus: 3 }, { nome: 'Gorm il Muto', bonus: 2 }, { nome: 'Lisandro Manisvelte', bonus: 4 }, { nome: 'Nonna Ortensia', bonus: 1 }, { nome: 'Ser Baldovino', bonus: 3 }, { nome: 'Kira dei Boschi', bonus: 2 }];
+export function nuovoTorneo(n = 4) { return { prove: mescola(PROVE_TORNEO).slice(0, Math.max(2, Math.min(6, n))), sfidanti: mescola(SFIDANTI).slice(0, 2), round: 0, tiri: [{}], punti: {}, t: Date.now() }; }
+// punti del giro: 3 al primo, 2 al secondo, 1 al terzo (a pari merito gli stessi punti)
+export function puntiGiro(tiri) {
+  const ord = [...new Set(Object.values(tiri).map(x => x.tot))].sort((a, b) => b - a), punti = {};
+  for (const [chi, x] of Object.entries(tiri)) punti[chi] = [3, 2, 1][ord.indexOf(x.tot)] || 0;
+  return punti;
+}
+
+// ---------- caccia al tesoro di riserva (senza IA): indizi presi dal nome e dal tipo del luogo ----------
+const POSTI_TESORO = [['Grotta del Pescatore', 'grotta'], ['Torre Mozza', 'torre'], ['Collina dei Tre Ulivi', 'collina'], ['Rovine di Valfosca', 'rovine'], ['Bosco del Lupo Grigio', 'bosco'], ['Faro Spento', 'faro']];
+export function cacciaDiRiserva(conosciuti, attuale, livello = 1) {
+  const altri = (conosciuti || []).filter(l => l?.nome && l.nome !== attuale);
+  const [nome, tipo] = altri.length && Math.random() < 0.6 ? (l => [l.nome, l.tipo || 'luogo'])(caso(altri)) : caso(POSTI_TESORO);
+  const nascosto = nome.replace(/[aeiouàèéìòù]/gi, '_').split('').join(' ');
+  return { luogo: nome, indizi: [`Il tesoro è sepolto in un posto di tipo «${tipo}».`, `Il nome del posto ha ${nome.split(/\s+/).length} ${nome.split(/\s+/).length === 1 ? 'parola' : 'parole'} e comincia con «${nome[0]}».`, `Il nome, senza vocali: ${nascosto}`], oro: 40 + Math.floor(Math.random() * 60) * Math.max(1, livello), oggetto: caso(['Bussola d\'argento', 'Anello del marinaio', 'Pozione di guarigione superiore', 'Mantello di protezione', 'Gemma di luce']) };
+}
+
+// ---------- avventure scritte da voi: si controllano e si accorciano prima di salvarle o importarle ----------
+export function avventuraValida(a, autore) {
+  if (!a || typeof a !== 'object') return null;
+  const nemici = s => String(s || '').split(',').map(x => x.trim().match(/^(\d+)?\s*[x×]?\s*(.+)$/i)).filter(Boolean).map(m => ({ numero: Math.max(1, Math.min(8, Number(m[1]) || 1)), nome: testo(m[2], 40) })).filter(x => x.nome).slice(0, 4);
+  const scene = (Array.isArray(a.scene) ? a.scene : []).slice(0, 12).map((s, i) => ({ id: 's' + (i + 1), luogo: testo(s?.luogo, 60).trim(), tipo: testo(s?.tipo, 30) || undefined, leggi: testo(s?.leggi, 1200), obiettivo: testo(s?.obiettivo, 300), png: testo(s?.png, 200), indizi: testo(s?.indizi, 300), incontro: Array.isArray(s?.incontro) ? nemici(s.incontro.map(n => `${n.numero || 1} ${n.nome}`).join(',')) : nemici(s?.nemici), tesoro: testo(s?.tesoro, 200) || null })).filter(s => s.luogo && (s.leggi || s.obiettivo));
+  for (const s of scene) if (!s.incontro.length) s.incontro = null;
+  const titolo = testo(a.titolo, 80).trim(); if (!titolo || !scene.length) return null;
+  return { titolo, sinossi: testo(a.sinossi, 600), livelli: testo(a.livelli, 10) || '1-5', tipo: 'scritta', scene, segreti: (Array.isArray(a.segreti) ? a.segreti : String(a.segreti || '').split('\n')).map(x => testo(x, 200).trim()).filter(Boolean).slice(0, 8), ricompensa: testo(a.ricompensa, 200), autore: testo(autore || a.autore, 40) };
+}
