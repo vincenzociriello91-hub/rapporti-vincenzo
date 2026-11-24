@@ -15,7 +15,7 @@ export const RARI = [{ nome: 'Pozione di guarigione superiore', prezzo: 150 }, {
 export const SEGRETI = ['Sei in cerca di un fratello scomparso: chiedi di lui a ogni PNG importante.', 'Devi una grossa somma a un usuraio: metti da parte 200 monete senza dirlo agli altri.', 'Sei stato cacciato dalla tua gilda: riconquista il loro rispetto con un\'impresa.', 'Hai giurato di proteggere un compagno del gruppo, anche a costo della vita.', 'Colleziona un trofeo da ogni nemico importante sconfitto.', 'Un antico spirito ti parla in sogno: segui i suoi segni.', 'Vuoi diventare famoso: fai in modo che il tuo nome arrivi in ogni città.', 'Cerchi la spada di tuo nonno, perduta in un dungeon della regione.'];
 // il testo da leggere ad alta voce: via le indicazioni di regia "*(tono epico)*", asterischi e titoli markdown
 export function senzaRegia(t) { return String(t ?? '').replace(/\*?\((?:tono|voce|con tono|musica|pausa|sottofondo)[^)]*\)\*?/gi, '').replace(/[*_#`]+/g, '').replace(/[ \t]{2,}/g, ' ').trim(); }
-export const TIPI_EVENTO = ['png_ricordo', 'riposo', 'privato', 'musica', 'avventura', 'tesoro_nascosto', 'tesoro_indizio', 'rompicapo', 'torneo', 'bottino', 'combattimento', 'compagno', 'condizione', 'cura', 'danno', 'danno_nemico', 'edificio', 'enigma', 'esperienza', 'fazione', 'illustra', 'luogo', 'minaccia', 'minaccia_sventata', 'missione', 'missione_fatta', 'morte', 'negozio', 'nemesi', 'nemesi_fuga', 'nemico', 'oggetto', 'oro', 'png', 'png_nota', 'reputazione', 'reputazione_luogo', 'scelta', 'scena', 'segreto_fatto', 'sfida_persa', 'sfida_vinta', 'sogno', 'suono', 'tempo', 'tiro', 'valuta', 'valuta_pg', 'voto']; // gli eventi che il master AI può usare (quelli di applicaEvento)
+export const TIPI_EVENTO = ['png_ricordo', 'riposo', 'privato', 'musica', 'avventura', 'patto', 'patto_chiuso', 'tesoro_nascosto', 'tesoro_indizio', 'rompicapo', 'torneo', 'bottino', 'combattimento', 'compagno', 'condizione', 'cura', 'danno', 'danno_nemico', 'edificio', 'enigma', 'esperienza', 'fazione', 'illustra', 'luogo', 'minaccia', 'minaccia_sventata', 'missione', 'missione_fatta', 'morte', 'negozio', 'nemesi', 'nemesi_fuga', 'nemico', 'oggetto', 'oro', 'png', 'png_nota', 'reputazione', 'reputazione_luogo', 'scelta', 'scena', 'segreto_fatto', 'sfida_persa', 'sfida_vinta', 'sogno', 'suono', 'tempo', 'tiro', 'valuta', 'valuta_pg', 'voto']; // gli eventi che il master AI può usare (quelli di applicaEvento)
 export const TATTICHE = { fuoco: /fuoco|fiamm|incendi|brucio|palla di fuoco/i, ghiaccio: /ghiacci|gelo|congel/i, frecce: /frecc|arco|balestr|tiro da lontano/i, furtivita: /furtiv|nascond|di soppiatto|silenzio|alle spalle/i, magia: /incantesim|lancio|magia|dardo incantato/i, mischia: /spad|ascia|martell|carico|colpisco|attacco corpo/i, trappole: /trappol|imbosc/i, parlare: /convinc|persuad|minacci|ingann|tratt/i, fuga: /scapp|fuggo|ritirat|corro via/i };
 export const RISERVA = {
   scena: {
@@ -37,7 +37,7 @@ export const RISERVA = {
 export const PROMEMORIA = [['giorno', 86400000], ['ora', 3600000]]; // promemoria il giorno prima e un'ora prima
 export function b64url(b) { let s = ''; for (const x of b) s += String.fromCharCode(x); return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
 // cosa entra nella copia della campagna (non i membri con le loro chiavi, non le immagini)
-export const COPIA = /^(pg:|luogo:|note:|disegni:)|^(homebrew|cronaca|appunti|fatti|bestiario|campagna|diario|memoria|mondo|png|luoghi|luogoAttuale|segnalini|gruppo|missioni|voto|enigma|nemesi|scelte|minacce|base|serate|riepiloghi|memoriale|relazioni|statistiche|avventura|avventureMie|caccia|rompicapo|tattiche|dungeonGiorno|aree|combattimento|negozio|noteMaster|daRiassumere)$/;
+export const COPIA = /^(pg:|luogo:|note:|disegni:)|^(homebrew|cronaca|appunti|fatti|bestiario|campagna|diario|memoria|mondo|png|luoghi|luogoAttuale|segnalini|gruppo|missioni|voto|enigma|nemesi|scelte|minacce|base|serate|riepiloghi|memoriale|relazioni|statistiche|avventura|avventureMie|caccia|rompicapo|patti|giornali|rivincite|bancarella|tattiche|dungeonGiorno|aree|combattimento|negozio|noteMaster|daRiassumere)$/;
 export const PER_SPETTATORI = ['reazione', 'stato', 'riepiloghi', 'libro', 'statistiche', 'traduci', 'esci', 'impostazioni', 'rtc', 'suggerimento'];
 export const SILENZIO = 4 * 60000; // dopo quanti minuti di silenzio il master AI fa succedere qualcosa
 export const REAZIONI = ['👏', '😂', '😱', '🔥', '❤️', '🎲', '✋'];
@@ -261,7 +261,7 @@ export function tiraFormula(f, modo) {
 // Calendario di gioco: stagioni di 30 giorni, settimane di 7 giorni, una festa per stagione (la stessa regola è in app-regia.js, per lo schermo)
 export const STAGIONI = ['primavera', 'estate', 'autunno', 'inverno'];
 export const GIORNI_SETTIMANA = ['Giorno della Luna', 'Giorno del Fuoco', 'Giorno dell\'Acqua', 'Giorno del Vento', 'Giorno della Terra', 'Giorno delle Stelle', 'Giorno del Sole'];
-export const FESTE = { primavera: [15, 'Festa dei Fiori'], estate: [20, 'Notte dei Fuochi'], autunno: [10, 'Festa del Raccolto'], inverno: [25, 'Notte Lunga'] };
+export const FESTE = { primavera: [15, 'Festa dei Fiori'], estate: [20, 'Torneo d\'Estate'], autunno: [10, 'Festa del Raccolto'], inverno: [25, 'Festa del Ghiaccio'] };
 export function dataGioco(cal) {
   if (!cal) return null;
   const g = cal.giorno || 1, gs = g - (cal.inizioStagione || 1) + 1, [gf, festa] = FESTE[cal.stagione] || [0, ''];
@@ -357,3 +357,26 @@ export function avventuraValida(a, autore) {
   const titolo = testo(a.titolo, 80).trim(); if (!titolo || !scene.length) return null;
   return { titolo, sinossi: testo(a.sinossi, 600), livelli: testo(a.livelli, 10) || '1-5', tipo: 'scritta', scene, segreti: (Array.isArray(a.segreti) ? a.segreti : String(a.segreti || '').split('\n')).map(x => testo(x, 200).trim()).filter(Boolean).slice(0, 8), ricompensa: testo(a.ricompensa, 200), autore: testo(autore || a.autore, 40) };
 }
+
+// ---------- feste delle stagioni: ogni festa del calendario porta una missione speciale (d'estate anche il torneo) ----------
+export const EVENTI_STAGIONE = {
+  primavera: { titolo: 'Il fiore che canta', descrizione: 'Alla Festa dei Fiori vince chi porta il fiore più raro dei dintorni: si dice che nel bosco ne cresca uno che canta.', ricompensa: 'corona di fiori e 50 mo' },
+  estate: { titolo: 'Il campione d\'estate', descrizione: 'Al Torneo d\'Estate arrivano campioni da tutta la regione: iscrivetevi e battete i migliori.', ricompensa: 'nastro d\'oro del campione', torneo: true },
+  autunno: { titolo: 'Il carro del raccolto', descrizione: 'Alla Festa del Raccolto il carro con il grano del villaggio è sparito nella notte: ritrovatelo prima del banchetto.', ricompensa: 'posto d\'onore al banchetto e 80 mo' },
+  inverno: { titolo: 'Le statue di ghiaccio', descrizione: 'Alla Festa del Ghiaccio si scolpiscono statue sul lago gelato, ma qualcuno di notte le distrugge: scoprite chi è.', ricompensa: 'fiocco d\'argento (+1 ai tiri salvezza contro il freddo) e 60 mo' }
+};
+
+// ---------- giornale del regno di riserva (senza IA): le imprese della serata viste dalla gente ----------
+export function giornaleDiRiserva(ev) {
+  const nemici = [...new Set(ev.filter(d => / è sconfitto/.test(d.testo)).map(d => nomeBase(d.testo.replace(/ è sconfitto\.?$/, ''))))];
+  const luoghi = [...new Set(ev.filter(d => d.tipo === 'luogo').map(d => d.testo.replace(/^.*?: /, '').replace(/\.$/, '')))];
+  const imprese = ev.filter(d => /trova il tesoro|Vince il torneo|risolve il rompicapo|Missione completata|vince il duello/.test(d.testo)).map(d => d.testo.replace(/^🏆 /, ''));
+  const articoli = [];
+  if (nemici.length) articoli.push({ titolo: nemici.length === 1 ? `Sconfitto ${nemici[0]}!` : `${nemici.length} nemici sconfitti!`, testo: `In città si racconta di avventurieri che hanno battuto ${nemici.slice(0, 4).join(', ')}. Nelle taverne non si parla d'altro.` });
+  if (luoghi.length) articoli.push({ titolo: 'Avventurieri in viaggio', testo: `Sono stati visti a ${luoghi.slice(0, 4).join(', ')}. Chi li ha incontrati giura che portano guai e fortuna insieme.` });
+  for (const t of imprese.slice(0, 2)) articoli.push({ titolo: 'Ultim\'ora', testo: testo(t, 300) });
+  if (!articoli.length) articoli.push({ titolo: 'Giornata tranquilla', testo: 'Nessuna grande notizia: i mercanti dicono che è la quiete prima della tempesta.' });
+  return { testata: 'La Gazzetta del Regno', articoli: articoli.slice(0, 4), pettegolezzo: 'Si dice che qualcuno, in città, stia chiedendo proprio di voi.' };
+}
+// nome di base di un nemico ("Goblin 2" → "Goblin"), per le carte e per le rivincite
+export const nomeBase = nome => String(nome || '').replace(/\s+\d+$/, '').trim();

@@ -3,7 +3,7 @@
 // e fa da ponte per la voce (segnalazione WebRTC) e per il master AI (Gemini, chiave solo qui).
 import { DurableObject } from 'cloudflare:workers';
 import { codiceCasuale, sha, testo } from './tavolo-util.js';
-import { INCONTRI_VIAGGIO, dataGioco, STAGIONI, COMPAGNI_ANIMALI, STANZE_BASE, MESTIERI, RICETTE, SEGRETI, senzaRegia, TIPI_EVENTO, TATTICHE, RISERVA, PROMEMORIA, b64url, COPIA, PER_SPETTATORI, SILENZIO, REAZIONI, MAZZO, DIFFICOLTA, LINGUE, SUONI, ATTESA_MASTER, SCENE_EN, COMPAGNI, AVVENTURE, trofei, CATALOGHI, tipoNegozio, prezzoBase, SOGLIE_PX, incontroCasuale, tesoroCasuale, pngCasuale, UMANOIDI, nomeMostro, stagione, tiraFormula, RARI, TRUCCHI, PX_ANIMALE, cresciAnimale, LIVELLI_BASE, RUNE, TRAPPOLE, nuovoRompicapo, rompicapoGiusto, nuovoTorneo, puntiGiro, cacciaDiRiserva, avventuraValida } from './tavolo-dati.js';
+import { INCONTRI_VIAGGIO, dataGioco, STAGIONI, COMPAGNI_ANIMALI, STANZE_BASE, MESTIERI, RICETTE, SEGRETI, senzaRegia, TIPI_EVENTO, TATTICHE, RISERVA, PROMEMORIA, b64url, COPIA, PER_SPETTATORI, SILENZIO, REAZIONI, MAZZO, DIFFICOLTA, LINGUE, SUONI, ATTESA_MASTER, SCENE_EN, COMPAGNI, AVVENTURE, trofei, CATALOGHI, tipoNegozio, prezzoBase, SOGLIE_PX, incontroCasuale, tesoroCasuale, pngCasuale, UMANOIDI, nomeMostro, stagione, tiraFormula, RARI, TRUCCHI, PX_ANIMALE, cresciAnimale, LIVELLI_BASE, RUNE, TRAPPOLE, nuovoRompicapo, rompicapoGiusto, nuovoTorneo, puntiGiro, cacciaDiRiserva, avventuraValida, SFIDANTI, EVENTI_STAGIONE, giornaleDiRiserva, nomeBase } from './tavolo-dati.js';
 import { chiamaGemini, sintesiVocale, STILE_IMG, STILI_IMG, generaImmagine, chiamaClaude, leggiJSON } from './tavolo-ai.js';
 import { chiaveLuogo, indovinaTipo, W, H, generaLuogo, ARREDI_V, griglia, vicine, percorso, vede, MOVIBILI, celleArea } from './tavolo-mappe.js';
 export * from './tavolo-util.js';
@@ -98,7 +98,7 @@ export class Tavolo extends DurableObject {
       await this.ctx.storage.put('img:' + id, jpeg);
       const elenco = await this.get('immagini', []);
       const luogo = await this.get('luogoAttuale');
-      elenco.push({ id, t: Date.now(), didascalia: testo(didascalia, 200), luogo });
+      elenco.push({ id, t: Date.now(), didascalia: testo(didascalia, 200), luogo, sessione: (await this.get('campagna'))?.sessione || 1 });
       while (elenco.length > 60) { const vecchia = elenco.shift(); await this.ctx.storage.delete('img:' + vecchia.id); }
       await this.put('immagini', elenco);
       const d = await this.get('diario', []);
@@ -252,6 +252,7 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
     if (!prima || !dopo || prima.pf === dopo.pf) return;
     const d = (dopo.pf || 0) - (prima.pf || 0);
     await this.conta(id, d < 0 ? { danniSubiti: -d, ...(prima.pf > 0 && dopo.pf <= 0 ? { cadute: 1 } : {}) } : { cure: d });
+    if (prima.pf > 0 && dopo.pf <= 0) await this.segnaRivincita(id);
   }
   // ---------- battute di riserva (come i Dialoghi dei Varchi): senza intelligenza artificiale, mai due volte uguali ----------
   async battutaDiRiserva(luogo, silenzio) {
@@ -424,11 +425,12 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
   }
   // ---------- mondo vivo: bacheca, voto, enigmi, nemesi, scelte, sogni, segreti, minacce, reputazione, compagni, casa, mestieri ----------
   async mondoVivo(vedeSegreti) {
-    const [missioni, voto, enigma, nemesi, scelte, minacce, base, mo, caccia, rompicapo, torneo] = await Promise.all(['missioni', 'voto', 'enigma', 'nemesi', 'scelte', 'minacce', 'base', 'mondo', 'caccia', 'rompicapo', 'torneo'].map(k => this.get(k, null)));
+    const [missioni, voto, enigma, nemesi, scelte, minacce, base, mo, caccia, rompicapo, torneo, bancarella, duello, patti, rivincite] = await Promise.all(['missioni', 'voto', 'enigma', 'nemesi', 'scelte', 'minacce', 'base', 'mondo', 'caccia', 'rompicapo', 'torneo', 'bancarella', 'duello', 'patti', 'rivincite'].map(k => this.get(k, null)));
     return { missioni: missioni || [], voto, enigma: enigma ? { ...enigma, risposta: vedeSegreti ? enigma.risposta : undefined } : null, nemesi, scelte: scelte || [], minacce: minacce || [], base, reputazioneLuoghi: mo?.reputazioneLuoghi || {},
       // caccia al tesoro: il luogo e gli indizi non ancora decifrati li vede solo chi guida (e il master AI)
       caccia: caccia ? { ...caccia, luogo: vedeSegreti || caccia.trovato ? caccia.luogo : undefined, indizi: vedeSegreti || caccia.trovato ? caccia.indizi : caccia.indizi.slice(0, caccia.scoperti), totale: caccia.indizi.length, prove: undefined } : null,
       rompicapo: rompicapo ? { ...rompicapo, soluzione: vedeSegreti ? rompicapo.soluzione : undefined, trappolaNome: TRAPPOLE[rompicapo.trappola]?.nome } : null, torneo,
+      bancarella: bancarella || [], duello, patti: patti || [], rivincite: (rivincite || []).map(({ combattimento, ...r }) => r),
       catalogo: { ricette: RICETTE, stanze: STANZE_BASE, mestieri: MESTIERI, specie: Object.keys(COMPAGNI_ANIMALI), livelliBase: LIVELLI_BASE, pxAnimale: PX_ANIMALE, rune: RUNE.map(r => [r[0], r[1]]) } };
   }
   async annuncia(testoEv, tipo = 'sistema') { const ev = await this.diario(tipo, testoEv); this.tutti({ t: 'diario', ev }); }
@@ -653,6 +655,155 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
     }
     return this.mandaAvventure();
   }
+  // ---------- mercato tra giocatori: una bancarella dove mettere in vendita (o regalare) oggetti dell'inventario ----------
+  async bancarella(io, capo, m) {
+    const b = await this.get('bancarella', []), p = await this.get('pg:' + io), no = msg => this.invia(this.wsDi(io), { t: 'avviso', msg, errore: true });
+    const dai = (q, nome) => { const es = (q.equip || []).find(e => e.nome === nome && !e.indossato); if (es) es.qta = (es.qta || 1) + 1; else q.equip = [...(q.equip || []), { nome, qta: 1, indossato: false }]; };
+    if (m.t === 'bancarella_metti') {
+      if (!p) return; const nome = testo(m.nome, 60), k = (p.equip || []).findIndex(e => e.nome === nome); if (k < 0) return no('Questo oggetto non è nel tuo inventario');
+      if (b.length >= 30) return no('La bancarella è piena: aspettate che qualcuno compri');
+      const prezzo = Math.max(0, Math.min(100000, Math.round(Number(m.prezzo) || 0)));
+      if ((p.equip[k].qta || 1) > 1) p.equip[k].qta--; else p.equip.splice(k, 1);
+      b.push({ id: 'b' + Date.now().toString(36) + Math.floor(Math.random() * 100), da: io, chi: p.nome, nome, prezzo, t: Date.now() });
+      await this.put('pg:' + io, p); this.tutti({ t: 'scheda', per: io, pg: p });
+      await this.put('bancarella', b); await this.annuncia(`${p.nome} ${prezzo ? `mette sulla bancarella ${nome} a ${prezzo} mo` : `regala ${nome}: è sulla bancarella per chi lo vuole`}.`);
+      return this.aggiornaMondo();
+    }
+    const k = b.findIndex(x => x.id === m.id); if (k < 0) return; const x = b[k];
+    if (m.t === 'bancarella_compra') {
+      if (!p || x.da === io) return; if ((p.oro || 0) < x.prezzo) return no(`Servono ${x.prezzo} mo (ne hai ${p.oro || 0})`);
+      p.oro = (p.oro || 0) - x.prezzo; dai(p, x.nome); await this.put('pg:' + io, p); this.tutti({ t: 'scheda', per: io, pg: p, nota: `compra ${x.nome}` });
+      const v = await this.get('pg:' + x.da); if (v && x.prezzo) { v.oro = (v.oro || 0) + x.prezzo; await this.put('pg:' + x.da, v); this.tutti({ t: 'scheda', per: x.da, pg: v, nota: `vende ${x.nome}: +${x.prezzo} mo` }); }
+      await this.annuncia(`${p.nome} ${x.prezzo ? `compra ${x.nome} da ${x.chi} per ${x.prezzo} mo` : `prende ${x.nome}, regalo di ${x.chi}`}.`); this.tutti({ t: 'suono', nome: 'monete' });
+    } else if (m.t === 'bancarella_togli') {
+      if (x.da !== io && !capo) return; const v = await this.get('pg:' + x.da); if (v) { dai(v, x.nome); await this.put('pg:' + x.da, v); this.tutti({ t: 'scheda', per: x.da, pg: v }); }
+    } else return;
+    b.splice(k, 1); await this.put('bancarella', b); return this.aggiornaMondo();
+  }
+
+  // ---------- duello amichevole: due personaggi (o il campione dell'arena) si sfidano; i punti ferita veri non cambiano ----------
+  async statDuello(chi, liv = 1) {
+    if (chi.startsWith('npc:')) { const x = SFIDANTI.find(y => 'npc:' + y.nome === chi) || SFIDANTI[0]; return { nome: x.nome, pf: 2 * (8 + 6 * liv), ca: 12 + Math.ceil(x.bonus / 2), att: 2 + x.bonus, danno: `1d8+${Math.min(4, x.bonus)}` }; } // nel duello i punti contano doppio: dura qualche colpo in più
+    const p = await this.get('pg:' + chi); if (!p) return null;
+    const mod = Math.max(Math.floor(((p.car?.for || 10) - 10) / 2), Math.floor(((p.car?.des || 10) - 10) / 2)), prof = 2 + Math.floor(((p.livello || 1) - 1) / 4);
+    return { nome: p.nome, pf: 2 * Math.max(8, p.pfMax || p.pf || 10), ca: p.ca || 10, att: mod + prof, danno: `1d8${mod ? (mod > 0 ? '+' : '') + mod : ''}` };
+  }
+  async duello(io, capo, m) {
+    let d = await this.get('duello', null); const p = await this.get('pg:' + io);
+    const salva = async () => { await this.put('duello', d); return this.aggiornaMondo(); };
+    if (m.t === 'duello_sfida') {
+      if (!p || (d && !d.finito)) return;
+      const con = m.con === 'campione' ? 'npc:' + SFIDANTI[Math.floor(Math.random() * SFIDANTI.length)].nome : String(m.con || '');
+      if (con === io || (!con.startsWith('npc:') && !(await this.get('pg:' + con)))) return;
+      const A = await this.statDuello(io, p.livello), B = await this.statDuello(con, p.livello);
+      d = { a: io, b: con, nomi: { [io]: A.nome, [con]: B.nome }, stat: { [io]: A, [con]: B }, pf: { [io]: A.pf, [con]: B.pf }, log: [], stato: con.startsWith('npc:') ? 'via' : 'invito', turno: io, t: Date.now() };
+      await this.annuncia(con.startsWith('npc:') ? `⚔️ ${A.nome} sfida a duello ${B.nome}, il campione dell'arena!` : `⚔️ ${A.nome} sfida a duello ${B.nome}: accetta?`);
+      return salva();
+    }
+    if (!d) return;
+    const dentro = io === d.a || io === d.b;
+    if (m.t === 'duello_chiudi') { if (!dentro && !capo) return; await this.put('duello', null); return this.aggiornaMondo(); }
+    if (d.finito) return;
+    if (m.t === 'duello_rispondi') {
+      if (io !== d.b || d.stato !== 'invito') return;
+      if (!m.si) { await this.annuncia(`${d.nomi[d.b]} rifiuta il duello.`); await this.put('duello', null); return this.aggiornaMondo(); }
+      d.stato = 'via'; await this.annuncia(`${d.nomi[d.b]} accetta il duello! Comincia ${d.nomi[d.a]}.`); return salva();
+    }
+    if (m.t === 'duello_resa' && dentro) { d.finito = true; d.vincitore = io === d.a ? d.b : d.a; await this.annuncia(`${d.nomi[io]} si arrende: ${d.nomi[d.vincitore]} vince il duello.`); return salva(); }
+    if (m.t === 'duello_colpo' && d.stato === 'via' && d.turno === io) {
+      await this.colpoDuello(d, io);
+      while (!d.finito && d.turno.startsWith('npc:')) await this.colpoDuello(d, d.turno); // il campione risponde subito
+      return salva();
+    }
+  }
+  async colpoDuello(d, chi) {
+    const altro = chi === d.a ? d.b : d.a, A = d.stat[chi], B = d.stat[altro], d20 = 1 + Math.floor(Math.random() * 20), tot = d20 + A.att, colpito = d20 === 20 || (d20 !== 1 && tot >= B.ca);
+    let danno = 0; if (colpito) danno = Math.max(1, tiraFormula(A.danno)?.totale || 1) + (d20 === 20 ? tiraFormula('1d8').totale : 0);
+    d.pf[altro] = Math.max(0, d.pf[altro] - danno);
+    d.log = [...d.log, `${A.nome}: ${d20}${A.att >= 0 ? '+' : ''}${A.att} = ${tot} ${colpito ? `→ colpisce${d20 === 20 ? ' con un critico' : ''}, ${danno} danni` : '→ manca'}`].slice(-6);
+    if (d.pf[altro] <= 0) { d.finito = true; d.vincitore = chi; await this.annuncia(`⚔️ ${A.nome} vince il duello contro ${B.nome}! Nessuna ferita vera: era un duello amichevole.`); if (!chi.startsWith('npc:')) await this.conta(chi, { duelli: 1 }); this.tutti({ t: 'suono', nome: 'vittoria' }); }
+    else { d.turno = altro; this.tutti({ t: 'suono', nome: colpito ? 'colpo' : 'tocco' }); }
+  }
+
+  // ---------- giornale del regno: le imprese della serata raccontate dalla gente (a ogni nuova serata o quando lo chiede chi guida) ----------
+  async stampaGiornale() {
+    const [c, diario, giornali, mo] = await Promise.all([this.get('campagna'), this.get('diario', []), this.get('giornali', []), this.get('mondo', {})]);
+    const da = giornali.at(-1)?.t || 0, ev = diario.filter(d => d.t > da && ['narrazione', 'combattimento', 'luogo', 'sistema', 'gruppo', 'scheda'].includes(d.tipo) && !/^📰/.test(d.testo)).slice(-80);
+    if (!ev.length) return null;
+    let g = null;
+    try {
+      const r = await this.g({ contents: [{ parts: [{ text: `Sei il redattore del giornale del regno in una campagna di D&D (${c.ambientazione}). Scrivi il nuovo numero, in italiano: le imprese degli avventurieri raccontate dalla gente comune, con un po' di ironia e qualche esagerazione, senza rivelare segreti che il gruppo non conosce. Dai un nome alla testata. Tre articoli brevi (titolo di massimo 8 parole, testo di massimo 60 parole) e un pettegolezzo di una frase che possa diventare l'aggancio per la prossima avventura.
+Rispondi SOLO JSON: {"testata":"...","articoli":[{"titolo":"...","testo":"..."}],"pettegolezzo":"..."}
+Notizie dal mondo: ${testo(mo.notizie?.at?.(-1)?.testo || '', 400)}
+Fatti recenti:\n${ev.map(d => `[${d.tipo}] ${testo(d.testo, 300)}`).join('\n')}` }] }], generationConfig: { temperature: 0.9, responseMimeType: 'application/json' } }, 'riassunto');
+      if (r.ok) g = leggiJSON((await r.json()).candidates?.[0]?.content?.parts?.map(x => x.text || '').join('') || '');
+    } catch { /* riserva sotto */ }
+    if (!Array.isArray(g?.articoli) || !g.articoli.length) g = giornaleDiRiserva(ev);
+    const numero = (giornali.at(-1)?.numero || 0) + 1, nuovo = { numero, sessione: c.sessione || 1, t: Date.now(), testata: testo(g.testata, 60) || 'La Gazzetta del Regno', articoli: g.articoli.slice(0, 4).map(a => ({ titolo: testo(a?.titolo, 90), testo: testo(a?.testo, 500) })).filter(a => a.titolo || a.testo), pettegolezzo: testo(g.pettegolezzo, 240) };
+    await this.put('giornali', [...giornali, nuovo].slice(-12));
+    await this.annuncia(`📰 È uscito il numero ${numero} de «${nuovo.testata}».`);
+    this.tutti({ t: 'giornale', giornale: nuovo }); return nuovo;
+  }
+
+  // ---------- patti e debiti con i PNG: il master li ricorda e li riscuote al momento giusto ----------
+  async eventoPatto(e) {
+    const l = await this.get('patti', []), pngDeve = e.chi_deve === 'png' || e.chi === 'png';
+    if (e.tipo === 'patto') {
+      const png = testo(e.png, 60).trim(), cosa = testo(e.cosa, 200).trim(); if (!png || !cosa) return;
+      l.push({ id: 'pt' + Date.now().toString(36) + l.length, png, cosa, chi: pngDeve ? 'png' : 'gruppo', stato: 'aperto', giorno: (await this.get('mondo', {}))?.calendario?.giorno || null, t: Date.now() });
+      await this.put('patti', l.slice(-20)); await this.annuncia(pngDeve ? `🤝 ${png} ha un debito con il gruppo: ${cosa}.` : `🤝 Patto con ${png}: il gruppo promette ${cosa}.`);
+    } else {
+      const x = (e.id && l.find(y => y.id === e.id)) || [...l].reverse().find(y => y.stato === 'aperto' && y.png === testo(e.png, 60).trim()); if (!x || x.stato !== 'aperto') return;
+      x.stato = e.esito === 'tradito' ? 'tradito' : 'saldato'; await this.put('patti', l);
+      if (x.stato === 'tradito') { const png = await this.get('png', {}); png[x.png] = { ...png[x.png], t: png[x.png]?.t || Date.now(), ricordi: [...(png[x.png]?.ricordi || []), testo(`Il gruppo non ha mantenuto il patto: ${x.cosa}`, 140)].slice(-6) }; await this.put('png', png); }
+      await this.annuncia(x.stato === 'saldato' ? `🤝 Patto mantenuto con ${x.png}: ${x.cosa}.` : `💔 Patto tradito con ${x.png}: se lo ricorderà.`);
+    }
+    return this.aggiornaMondo();
+  }
+
+  // ---------- feste delle stagioni: nel giorno della festa arriva una missione speciale (d'estate si apre il torneo) ----------
+  async festaStagione(forza, cal) {
+    cal = cal || (await this.get('mondo', {}))?.calendario || {};
+    const st = cal.stagione || stagione().stagione, ev = EVENTI_STAGIONE[st]; if (!ev) return;
+    const chiave = `${cal.giorno || 0}-${st}`; if (!forza && (await this.get('festaFatta', '')) === chiave) return; await this.put('festaFatta', chiave);
+    const l = await this.get('missioni', []), gia = l.filter(x => x.titolo.startsWith(ev.titolo)).length;
+    await this.eventoMondo({ tipo: 'missione', titolo: gia ? `${ev.titolo} (${gia + 1}° anno)` : ev.titolo, descrizione: ev.descrizione, ricompensa: ev.ricompensa, entro: 3 });
+    if (ev.torneo) { const tr = await this.get('torneo', null); if (!tr || tr.finito) await this.torneo('master', true, { t: 'torneo_apri' }); }
+    this.tutti({ t: 'musica', umore: 'festa' });
+  }
+
+  // ---------- rivincite: un nemico che ha messo a terra qualcuno del gruppo torna più forte; batterlo vale un trofeo ----------
+  async segnaRivincita(chi) {
+    if (!(await this.get('combattimento', null))?.attivo) return;
+    const nemici = Object.values(await this.get('segnalini', {})).filter(x => x.tipo === 'nemico' && (x.pf ?? 1) > 0); if (!nemici.length) return;
+    const nome = nomeBase(nemici.sort((a, b) => (b.pfMax || b.pf || 0) - (a.pfMax || a.pf || 0))[0].nome); if (!nome) return;
+    const l = await this.get('rivincite', []), n = (await this.get('statistiche', { t: {} })).t?.gruppo?.combattimenti || 0, p = await this.get('pg:' + chi);
+    let r = l.find(x => !x.vinta && x.nome === nome); if (!r) { r = { nome, volte: 0, t: Date.now(), vinta: false }; l.push(r); }
+    if (r.combattimento === n) return; // nello stesso scontro conta una volta sola
+    r.volte++; r.combattimento = n; r.chi = p?.nome; await this.put('rivincite', l.slice(-12));
+    await this.annuncia(`${nome} ha messo a terra ${p?.nome || 'un compagno'}. Ve ne ricorderete: la prossima volta sarà la vostra rivincita.`);
+    return this.aggiornaMondo();
+  }
+  async forzaRivincita(nome, pf, ca) {
+    const r = (await this.get('rivincite', [])).find(x => !x.vinta && x.nome === nomeBase(nome)); if (!r) return { pf, ca };
+    return { pf: Math.round((pf || 10) * Math.min(2, 1 + 0.5 * r.volte)), ca: (ca || 12) + Math.min(3, r.volte), rivincita: true };
+  }
+  async vintaRivincita(nome) {
+    const l = await this.get('rivincite', []), r = l.find(x => !x.vinta && x.nome === nomeBase(nome));
+    if (!r || ((await this.get('statistiche', { t: {} })).t?.gruppo?.combattimenti || 0) <= r.combattimento) return; // vale solo in uno scontro successivo
+    r.vinta = true; r.quando = Date.now(); await this.put('rivincite', l);
+    await this.annuncia(`🏆 Rivincita! ${r.nome} è sconfitto: questa volta avete vinto voi.`); this.tutti({ t: 'suono', nome: 'vittoria' });
+    return this.aggiornaMondo();
+  }
+
+  // ---------- album della campagna: tutte le illustrazioni, serata per serata ----------
+  async album() {
+    const [imm, diario, c] = await Promise.all([this.get('immagini', []), this.get('diario', []), this.get('campagna')]);
+    const marche = diario.filter(d => d.tipo === 'sistema' && /^Inizia la sessione \d+/.test(d.testo)).map(d => ({ t: d.t, n: Number(d.testo.match(/sessione (\d+)/)[1]) }));
+    const sessioneDi = t => [...marche].reverse().find(x => x.t <= t)?.n || 1;
+    return { immagini: imm.map(x => ({ ...x, sessione: x.sessione || sessioneDi(x.t) })), sessione: c.sessione || 1 };
+  }
+
   async mandaAvventure() {
     const membri = await this.get('membri', {}), lista = await this.elencoAvventure(), mie = await this.get('avventureMie', {});
     for (const ws of this.ctx.getWebSockets()) { const x = this.membroDi(ws); if (!x) continue; const vede = membri[x]?.ruolo === 'master' || membri[x]?.admin; this.invia(ws, { t: 'avventure', avventure: lista.map(({ chiave, ...a }) => vede ? { ...a, chiave } : a), avventureMie: vede ? mie : undefined }); }
@@ -726,6 +877,7 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
     nomi.gruppo = 'Il gruppo';
     const premio = (campo, titolo, fmt, min = 3) => { const [id, v] = Object.entries(st.t || {}).filter(([k]) => k !== 'gruppo').sort((a, b) => (b[1][campo] || 0) - (a[1][campo] || 0))[0] || []; return (v?.[campo] || 0) >= min ? { titolo, chi: nomi[id] || '?', motivo: fmt(v[campo]) } : null; };
     const premi = [premio('fallimenti', 'Re degli 1 naturali', n => `${n} uno naturali`, 2), premio('critici', 'Baciato dalla fortuna', n => `${n} venti naturali`, 2), premio('danniSubiti', 'Spugna del gruppo', n => `${n} danni presi`, 15), premio('danniFatti', 'Mano pesante', n => `${n} danni inflitti`, 15), premio('cure', 'Angelo custode', n => `${n} punti ferita curati`, 10), premio('speso', 'Mani bucate', n => `${n} monete spese`), premio('tiri', 'Lanciadadi compulsivo', n => `${n} tiri`, 20), premio('cadute', 'Abbonato al pavimento', n => `${n} volte a terra`, 2)].filter(Boolean);
+    for (const r of (await this.get('rivincite', [])).filter(x => x.vinta)) premi.push({ titolo: 'Rivincita!', chi: 'Il gruppo', motivo: `${r.nome}, che vi aveva battuti ${r.volte === 1 ? 'una volta' : r.volte + ' volte'}` });
     return { sessione: st.sessione, s: st.s, tot: st.t, nomi, trofei: trofei(st.s, nomi), premi }; // "tot": "t" è il tipo del messaggio
   }
 
@@ -802,10 +954,10 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
     if (!luogo || !Array.isArray(mostri)) return;
     const pgs = Object.values(seg).filter(x => x.tipo === 'pg'), cx = pgs.length ? Math.round(pgs.reduce((a, x) => a + x.x, 0) / pgs.length) : Math.floor(W / 2), cy = pgs.length ? Math.round(pgs.reduce((a, x) => a + x.y, 0) / pgs.length) : Math.floor(H / 2);
     const { blocco } = griglia(luogo), libera = (x, y) => x > 0 && y > 0 && x < luogo.w - 1 && y < luogo.h - 1 && !blocco[y * luogo.w + x] && !Object.values(seg).some(o => o.x === x && o.y === y);
-    let k = 0;
-    for (const mo of mostri.slice(0, 6)) for (let i = 0; i < Math.min(8, mo.numero || 1); i++) {
+    let k = 0; const forze = await Promise.all(mostri.slice(0, 6).map(mo => this.forzaRivincita(mo.nome, Number(mo.pf) || 10, Number(mo.ca) || 12))); // chi vi ha battuti torna più forte
+    for (const [j, mo] of mostri.slice(0, 6).entries()) for (let i = 0; i < Math.min(8, mo.numero || 1); i++) {
       let fatto = false;
-      for (let r = 4; r < 12 && !fatto; r++) for (let t = 0; t < 24 && !fatto; t++) { const a = (k * 1.7 + t) * 0.5, x = cx + Math.round(Math.cos(a) * r), y = cy + Math.round(Math.sin(a) * r * 0.7); if (libera(x, y)) { const nome = (mo.numero || 1) > 1 ? `${testo(mo.nome, 24)} ${i + 1}` : testo(mo.nome, 30); seg['n_' + Date.now().toString(36) + k] = { x, y, nome, colore: '#d84b3c', tipo: 'nemico', pf: Number(mo.pf) || 10, pfMax: Number(mo.pf) || 10, ca: Number(mo.ca) || 12 }; fatto = true; k++; } }
+      for (let r = 4; r < 12 && !fatto; r++) for (let t = 0; t < 24 && !fatto; t++) { const a = (k * 1.7 + t) * 0.5, x = cx + Math.round(Math.cos(a) * r), y = cy + Math.round(Math.sin(a) * r * 0.7); if (libera(x, y)) { const nome = (mo.numero || 1) > 1 ? `${testo(mo.nome, 24)} ${i + 1}` : testo(mo.nome, 30); seg['n_' + Date.now().toString(36) + k] = { x, y, nome, colore: '#d84b3c', tipo: 'nemico', pf: forze[j].pf, pfMax: forze[j].pf, ca: forze[j].ca, ...(forze[j].rivincita ? { rivincita: true } : {}) }; fatto = true; k++; } }
     }
     await this.put('segnalini', seg); this.tutti({ t: 'segnalini', segnalini: seg });
     for (const mo of mostri.slice(0, 6)) { this.ctx.waitUntil(this.disegnaMostro(mo.nome)); await this.bestia(mo.nome, 'visti', Math.min(8, mo.numero || 1)); }
@@ -813,6 +965,7 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
   // carte da collezione: ogni tipo di mostro incontrato e sconfitto dal gruppo ("Goblin 2" conta come "Goblin")
   async bestia(nome, campo, quanti = 1) {
     const n = testo(String(nome || '').replace(/\s+\d+$/, ''), 40).trim(); if (!n) return;
+    if (campo === 'sconfitti') await this.vintaRivincita(n);
     const b = await this.get('bestiario', {}), x = b[n] || { visti: 0, sconfitti: 0, prima: Date.now() };
     x[campo] = (x[campo] || 0) + quanti; if (campo === 'sconfitti' && x.visti < x.sconfitti) x.visti = x.sconfitti;
     b[n] = x; if (Object.keys(b).length > 150) return; await this.put('bestiario', b); this.tutti({ t: 'bestiario', bestiario: b });
@@ -938,7 +1091,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
       mostri: await this.get('mostri', {}), volti: await this.get('volti', {}), negozio: await this.get('negozio', null),
       png: await this.get('png', {}), memoriale: await this.get('memoriale', []), ...(await this.mondoVivo(vedeSegreti)), serate: await this.get('serate', []), giocoTaverna: await this.get('giocoTaverna', null), noteMappa: { luogo: await this.get('luogoAttuale'), note: await this.get('note:' + await this.get('luogoAttuale'), []) }, disegni: { luogo: attuale, disegni: await this.get('disegni:' + attuale, []) }, avventure: (await this.elencoAvventure()).map(({ chiave, ...a }) => vedeSegreti ? { ...a, chiave } : a), avventureMie: vedeSegreti ? await this.get('avventureMie', {}) : undefined,
       avventura: vedeSegreti ? await this.avventuraPerMaster() : undefined,
-      cronaca: await this.get('cronaca', ''), appunti: vedeSegreti ? await this.get('appunti', '') : undefined, fatti: vedeSegreti ? await this.get('fatti', []) : undefined, giro: await this.statoGiro(), homebrew: vedeSegreti ? await this.get('homebrew', { mostri: [], oggetti: [] }) : undefined, viaggio: await this.get('viaggio', null), bestiario: await this.get('bestiario', {}), mondoChiave: io?.admin ? await this.get('mondoChiave', '') : undefined,
+      cronaca: await this.get('cronaca', ''), appunti: vedeSegreti ? await this.get('appunti', '') : undefined, fatti: vedeSegreti ? await this.get('fatti', []) : undefined, giro: await this.statoGiro(), homebrew: vedeSegreti ? await this.get('homebrew', { mostri: [], oggetti: [] }) : undefined, viaggio: await this.get('viaggio', null), bestiario: await this.get('bestiario', {}), giornali: await this.get('giornali', []), scelteRapide: await this.get('scelteRapide', []), mondoChiave: io?.admin ? await this.get('mondoChiave', '') : undefined,
       memoria: vedeSegreti ? memoria : undefined, suggerimenti: vedeSegreti ? suggerimenti.slice(-30) : undefined,
       costi: vedeSegreti ? await this.get('costi', null) : undefined
     };
@@ -1054,6 +1207,13 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
         case 'torneo_apri': case 'torneo_tira': case 'torneo_avanti': case 'torneo_chiudi': return this.torneo(io, capo, m);
         case 'addestra': return this.addestra(io, m);
         case 'avventura_salva': case 'avventura_elimina': case 'avventura_condividi': case 'avventura_importa': if (!capo) return; return this.avventureMie(ws, me, m);
+        case 'bancarella_metti': case 'bancarella_compra': case 'bancarella_togli': if (me.ruolo === 'spettatore') return; return this.bancarella(io, capo, m);
+        case 'duello_sfida': case 'duello_rispondi': case 'duello_colpo': case 'duello_resa': case 'duello_chiudi': return this.duello(io, capo, m);
+        case 'giornale_stampa': if (!capo) return; this.ctx.waitUntil(this.stampaGiornale().then(g => g || this.invia(ws, { t: 'avviso', msg: 'Ancora niente da raccontare: giocate un po\' e riprovate' }))); return this.invia(ws, { t: 'avviso', msg: 'Il giornale va in stampa…' });
+        case 'patto_nuovo': if (!capo) return; return this.eventoPatto({ tipo: 'patto', png: m.png, cosa: m.cosa, chi: m.chi });
+        case 'patto_chiudi': if (!capo) return; return this.eventoPatto({ tipo: 'patto_chiuso', id: String(m.id || ''), esito: m.esito });
+        case 'festa_stagione': if (!capo) return; return this.festaStagione(true);
+        case 'album': return this.invia(ws, { t: 'album', ...(await this.album()) });
         case 'crea_oggetto': return this.creaOggetto(ws, io, String(m.ricetta || ''));
         case 'mestiere': { const p = await this.get('pg:' + io); if (!p || !MESTIERI[m.mestiere]) return; p.mestiere = m.mestiere; await this.put('pg:' + io, p); return this.tutti({ t: 'scheda', per: io, pg: p }); }
         case 'compagno_nuovo': if (!capo) return; return this.eventoMondo({ tipo: 'compagno', pg: membri[m.per] ? m.per : io, nome: m.nome, specie: m.specie });
@@ -1172,7 +1332,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
       nome: testo(m.nome, 60) || 'Nuova campagna', regole: m.regole === '3.5' ? '3.5' : '5e',
       ambientazione: testo(m.ambientazione, 400) || 'Fantasy classico', masterTipo: m.masterTipo === 'umano' ? 'umano' : 'ai',
       invito: codiceCasuale(8), invitoSpettatori: codiceCasuale(10), creata: Date.now(), sessione: 1, solitaria: !!m.solitaria, prova: !!m.prova,
-      sfida: m.sfida?.titolo ? { titolo: testo(m.sfida.titolo, 80), obiettivo: testo(m.sfida.obiettivo, 400), settimana: testo(m.sfida.settimana, 12) } : undefined
+      sfida: m.sfida?.titolo ? { titolo: testo(m.sfida.titolo, 80), obiettivo: testo(m.sfida.obiettivo, 400), settimana: testo(m.sfida.settimana, 12), ...(m.sfida.allenamento ? { allenamento: true } : {}) } : undefined
     };
     await this.put('campagna', campagna);
     if (AVVENTURE[m.avventura]) await this.put('avventura', { id: m.avventura, scena: 0, iniziata: false });
@@ -1257,7 +1417,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
       if (m.differito !== undefined) { const era = c.differito; c.differito = [6, 12, 24, 48].includes(Number(m.differito)) || (this.env.IMG_FINTA && Number(m.differito) > 0) ? Number(m.differito) : 0; /* nelle prove in locale valgono anche attese di pochi secondi */ if (era && !c.differito) { await this.put('giroScade', 0); if (!c.giro) await this.sciogliGiro(); } } // gioco a distanza: ognuno scrive quando può, il master risponde quando hanno scritto tutti o dopo queste ore
       if (m.timerTurno !== undefined) c.timerTurno = [30, 60, 90, 120].includes(Number(m.timerTurno)) ? Number(m.timerTurno) : 0; // clessidra del turno, in secondi (0 = spenta)
       if (m.nuovaSessione) { const b = await this.get('base', null), rend = LIVELLI_BASE[(b?.livello || 1) - 1]?.rendita; if (rend) { const g = await this.get('gruppo', { oro: 0, oggetti: [] }); g.oro = (g.oro || 0) + rend; await this.put('gruppo', g); this.tutti({ t: 'gruppo', gruppo: g }); await this.diario('sistema', `${b.nome} rende ${rend} monete d'oro al tesoro comune.`); } }
-      if (m.nuovaSessione) { c.sessione = (c.sessione || 1) + 1; c.invito = codiceCasuale(8); c.invitoSpettatori = codiceCasuale(10); await this.diario('sistema', `Inizia la sessione ${c.sessione}.`); this.ctx.waitUntil(this.evolviMondo(false)); await this.minacceCrescono(); for (const x of this.online()) if (membri[x] && membri[x].sessioneVista !== c.sessione) { membri[x].presenze = (membri[x].presenze || 0) + 1; membri[x].sessioneVista = c.sessione; } await this.put('membri', membri); }
+      if (m.nuovaSessione) { c.sessione = (c.sessione || 1) + 1; c.invito = codiceCasuale(8); c.invitoSpettatori = codiceCasuale(10); await this.diario('sistema', `Inizia la sessione ${c.sessione}.`); this.ctx.waitUntil(this.evolviMondo(false)); this.ctx.waitUntil(this.stampaGiornale()); await this.minacceCrescono(); for (const x of this.online()) if (membri[x] && membri[x].sessioneVista !== c.sessione) { membri[x].presenze = (membri[x].presenze || 0) + 1; membri[x].sessioneVista = c.sessione; } await this.put('membri', membri); }
       if (m.ruoli && me.admin) for (const [id, r] of Object.entries(m.ruoli)) if (membri[id] && ['giocatore', 'spettatore', 'master'].includes(r)) membri[id].ruolo = r;
       await this.put('campagna', c); await this.put('membri', membri);
     }
@@ -1697,7 +1857,7 @@ Quando un giocatore ha appena tirato un dado che avevi chiesto, risolvi l'esito.
 Sii un arbitro onesto: se un tiro fallisce, l'azione fallisce davvero e ha una conseguenza (niente salvataggi all'ultimo momento, niente "ce la fai lo stesso"); i nemici giocano per vincere e i personaggi possono cadere. Non riproporre lo stesso tipo di scena o di incontro due volte di fila. Ogni avventura ha una fine: quando l'obiettivo è raggiunto o perso, chiudi con un epilogo che dica cosa è cambiato nel mondo e proponi un nuovo capitolo, invece di allungare la storia.
 Decidi i fatti prima di raccontarli: quando compare qualcosa di nascosto (cosa c'è in un forziere, chi è il colpevole, cosa aspetta dietro una porta, il punto debole di un mostro) fissalo subito con l'evento "fatto" e poi rispettalo sempre. Prima di rispondere guarda "fatti_decisi" e "appunti_del_mondo": sono la verità del mondo, non cambiarli per assecondare i giocatori. I segreti scritti lì restano segreti finché il gruppo non li scopre giocando.${DIFFICOLTA[c.difficolta] ? '\n' + DIFFICOLTA[c.difficolta] : ''}
 Mai più di 110 parole di narrazione. Niente elenchi, niente markdown.
-Rispondi SOLO con JSON: {"narrazione":"testo da leggere","png":"nome del PNG che parla o vuoto","eventi":[ ... ]}
+Rispondi SOLO con JSON: {"narrazione":"testo da leggere","png":"nome del PNG che parla o vuoto","scelte":["tre idee brevi su cosa possono fare adesso i giocatori, massimo 8 parole ciascuna, diverse tra loro"],"eventi":[ ... ]}
 Eventi possibili (solo se accadono davvero):
 {"tipo":"danno","pg":"<id>","quantita":n,"zona":"testa|torso|braccio|gamba","motivo":"..."}
 {"tipo":"cura","pg":"<id>","quantita":n}
@@ -1730,6 +1890,7 @@ Eventi possibili (solo se accadono davvero):
 {"tipo":"tesoro_nascosto","titolo":"...","luogo":"nome esatto del luogo","indizi":["vago","più chiaro","chiarissimo"],"oro":n,"oggetto":"..."} (mappa del tesoro: i giocatori decifrano gli indizi e scavano nel luogo giusto; il luogo può essere nuovo) e {"tipo":"tesoro_indizio"} (rivela il prossimo indizio quando lo scoprono giocando)
 {"tipo":"rompicapo","forma":"leve|rune|serratura","trappola":"dardi|fulmine|gas|fossa|lame","titolo":"..."} (porta o scrigno con un meccanismo da risolvere sullo schermo: il gioco prepara indizi e soluzione, chi sbaglia subisce la trappola; quando lo risolvono racconta cosa si apre)
 {"tipo":"torneo"} (si apre un torneo a prove tra i personaggi, per feste, fiere e città)
+{"tipo":"patto","png":"nome","cosa":"cosa è stato promesso","chi_deve":"gruppo|png"} (un favore promesso o un debito: ricordalo e fallo pagare al momento giusto, vedi patti_e_debiti) e {"tipo":"patto_chiuso","png":"nome","esito":"saldato|tradito"}
 {"tipo":"suono","nome":"porta|colpo|magia|monete|pozione|vittoria|sconfitta|raro|ferito|successo"} (effetto sonoro su tutti i telefoni, nei momenti giusti: una porta che si apre, un colpo, un incantesimo, monete, una vittoria)
 {"tipo":"nemico","nome":"Goblin","x":n,"y":n,"pf":7,"ca":15} (segnalino sulla mappa, griglia ${W}x${H})
 {"tipo":"combattimento","azione":"inizia|prossimo|fine"} (inizia quando scoppia uno scontro: l'app tira l'iniziativa e gestisce i turni; "prossimo" quando un PNG o nemico ha finito il suo turno; "fine" quando lo scontro è finito)
@@ -1743,7 +1904,7 @@ Se nel contesto c'è "viaggio": racconta il viaggio a tappe (le tappe tranquille
 Il mondo è vivo (vedi "mondo_vivo"): fai tornare la nemesi nei momenti giusti, ricordati delle scelte morali (il finale della campagna dipende da loro), fai crescere le minacce ignorate (livello 1-5: a 5 colpiscono), metti missioni sulla bacheca quando il gruppo è in città, aiuta in segreto ogni personaggio verso il suo obiettivo segreto e ogni tanto manda un sogno privato con un indizio. Se c'è un enigma aperto aspetta la risposta dei giocatori: non dire la soluzione. Se c'è un voto aperto aspetta il risultato. La casa del gruppo e i compagni animali esistono: usali nella storia.
 {"tipo":"valuta","nome":"Corone di Argentea","cambio":0.5} (valuta locale e quanto vale in monete d'oro) e {"tipo":"valuta_pg","pg":"<id>","valuta":"...","quantita":n}
 Durante il combattimento rispetta l'ordine di iniziativa e gioca tu i turni dei nemici quando tocca a loro.${c.sfida && !c.sfida.esito ? `
-SFIDA DELLA SETTIMANA "${c.sfida.titolo}": ${c.sfida.obiettivo} È un'avventura breve per una serata: prepara subito la scena, tieni il ritmo alto e sii giusto. Quando il giocatore completa l'obiettivo usa {"tipo":"sfida_vinta"}; se il personaggio muore o la sfida non è più possibile usa {"tipo":"sfida_persa"}.` : ''}${c.solitaria ? `
+${c.sfida.allenamento ? `ALLENAMENTO DI CINQUE MINUTI "${c.sfida.titolo}": ${c.sfida.obiettivo} Serve a provare un personaggio nuovo: una sola scena, risposte brevi, in ogni risposta mostra una cosa che il personaggio sa fare (un'abilità, un incantesimo, un'arma) e chiudi dopo 4-6 scambi.` : `SFIDA DELLA SETTIMANA "${c.sfida.titolo}": ${c.sfida.obiettivo} È un'avventura breve per una serata:`} prepara subito la scena, tieni il ritmo alto e sii giusto. Quando il giocatore completa l'obiettivo usa {"tipo":"sfida_vinta"}; se il personaggio muore o la sfida non è più possibile usa {"tipo":"sfida_persa"}.` : ''}${c.solitaria ? `
 PARTITA IN SOLITARIA: c'è un solo giocatore. Interpreti anche i suoi compagni alleati (${COMPAGNI.map(x => x.nome + ': ' + x.carattere).join('; ')}): falli parlare con la loro personalità, agire e combattere nel loro turno (descrivi le azioni e usa danno_nemico per i loro colpi), senza rubare la scena al giocatore. Dai qualche suggerimento in più su cosa si può fare e rispondi sempre subito.` : ''}${avv && A ? `
 AVVENTURA PRONTA "${A.titolo}": seguila (trovi scene, segreti e scena attuale in "avventura"), ma lascia libertà ai giocatori e adattala alle loro scelte. Quando il gruppo arriva alla scena successiva usa {"tipo":"avventura","scena":"<id della scena>"}: l'app li porta nel luogo e mette i nemici della scena; poi tu decidi se e quando inizia il combattimento.` : ''}${avv && A.guidata ? `
 PRIMA PARTITA: chi gioca non ha mai fatto un gioco di ruolo. Frasi corte, niente gergo e niente sigle. A ogni tua risposta aggiungi in fondo un solo suggerimento pratico su cosa si può fare adesso nell'app, una cosa alla volta e mai due volte la stessa: scrivere o dire a voce cosa fa il personaggio; rispondere a un personaggio; fare una prova quando la chiedi (compare il tasto Tira); toccare una casella della mappa per muoversi; in combattimento attaccare nel proprio turno e poi premere Fine turno; guardare la Scheda. Fai riuscire le idee sensate, tieni basso il pericolo e non far morire nessuno. Chiedi una prova facile (CD 10) appena arrivano in cantina. Dopo l'ultima scena chiudi l'avventura con i complimenti.` : ''}`;
@@ -1753,7 +1914,10 @@ PRIMA PARTITA: chi gioca non ha mai fatto un gioco di ruolo. Frasi corte, niente
       appunti_del_mondo: (await this.get('appunti', '')) || undefined,
       fatti_decisi: await this.get('fatti', []),
       viaggio: await (async () => { const v = await this.get('viaggio', null) || await this.get('viaggioFatto', null); if (v && !(await this.get('viaggio', null))) await this.put('viaggioFatto', null); return v ? { verso: v.verso, da: v.da, giorno: v.fatti, giorni: v.giorni, a_cavallo: v.cavallo, tappe: v.eventi, in_corso: v.fatti < v.giorni } : undefined; })(), // racconta il viaggio: le tappe tranquille in poche frasi, le scoperte con un dettaglio, l'agguato come scena
-      creature_e_oggetti_inventati: await this.get('homebrew', undefined), // inventati da chi guida la campagna: usali quando la storia lo permette, con queste statistiche
+      creature_e_oggetti_inventati: await this.get('homebrew', undefined),
+      patti_e_debiti: (await this.get('patti', [])).filter(x => x.stato === 'aperto').map(x => x.chi === 'png' ? `${x.png} deve al gruppo: ${x.cosa}` : `il gruppo deve a ${x.png}: ${x.cosa}`), // ricordali e falli pagare al momento giusto
+      rivincite_in_sospeso: (await this.get('rivincite', [])).filter(x => !x.vinta).map(x => `${x.nome}: ha messo a terra il gruppo ${x.volte === 1 ? 'una volta' : x.volte + ' volte'}; quando la storia lo permette fallo tornare, più forte (sulla mappa il gioco gli dà da solo più PF e CA)`),
+      giornale_del_regno: (await this.get('giornali', [])).at(-1)?.articoli?.map(a => a.titolo), // inventati da chi guida la campagna: usali quando la storia lo permette, con queste statistiche
       azioni_segrete: (await this.get('segretiMaster', [])).map(x => `${x.nome} (pg ${x.pg}), solo a te: ${x.testo}`),
       giro: c.differito ? 'gioco a distanza: i giocatori scrivono a ore di distanza e leggono la tua risposta più tardi. In ultimi_eventi trovi cosa ha dichiarato ognuno: risolvi tutto in una sola narrazione un po\' più ampia del solito, dai a ogni personaggio il suo momento e chiudi con la situazione chiara e una scelta aperta per ciascuno. Chi non ha scritto resta prudente sullo sfondo: non decidere al suo posto' : c.giro ? 'turni a giro: in ultimi_eventi trovi cosa ha dichiarato ogni giocatore; risolvi le azioni di tutti insieme, dando a ognuno il suo momento' : undefined,
       luogo_attuale: luogo ? { nome: luogo.nome, tipo: luogo.tipo, edifici: luogo.edifici.map(e => ({ id: e.id, nome: e.nome, stato: e.stato })), oggetti_di_scena: (luogo.oggetti || []).slice(0, 60).map(o => ({ id: o.id, tipo: o.nome || o.tipo, x: o.x, y: o.y, stato: o.stato !== 'integro' ? o.stato : undefined })), storia: (luogo.storia || []).slice(-8) } : null,
@@ -1786,6 +1950,8 @@ PRIMA PARTITA: chi gioca non ha mai fatto un gioco di ruolo. Frasi corte, niente
     const out = leggiJSON(j.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '');
     if (!out) { await this.impara(['Rispondi sempre e solo con il JSON richiesto (narrazione, png, eventi), senza testo fuori dal JSON.'], []); return; }
     const narr = testo(out.narrazione, 1500).trim();
+    const scelte = (Array.isArray(out.scelte) ? out.scelte : []).map(x => testo(String(x), 80).trim()).filter(Boolean).slice(0, 3); // scelte rapide per chi non sa cosa fare
+    await this.put('scelteRapide', scelte);
     const noti = new Set(TIPI_EVENTO), ignoti = (Array.isArray(out.eventi) ? out.eventi : []).map(e => e?.tipo).filter(t => t && !noti.has(t));
     if (ignoti.length) await this.impara([`Usa solo i tipi di evento dell'elenco: "${[...new Set(ignoti)].slice(0, 3).join('", "')}" non esiste.`], []);
     for (const e of (Array.isArray(out.eventi) ? out.eventi.slice(0, 16) : [])) { try { await this.applicaEvento(e); } catch {} }
@@ -1799,7 +1965,7 @@ PRIMA PARTITA: chi gioca non ha mai fatto un gioco di ruolo. Frasi corte, niente
     if (narr) {
       const ev = await this.diario('narrazione', narr, 'master');
       if (silenzio) { const d = await this.get('diario', []); const x = d.find(y => y.t === ev.t && y.testo === ev.testo); if (x) { x.silenzio = true; await this.put('diario', d); } }
-      this.tutti({ t: 'narra', testo: ev.testo, png: testo(out.png, 40), chi: 'master', modello: r.modello });
+      this.tutti({ t: 'narra', testo: ev.testo, png: testo(out.png, 40), chi: 'master', modello: r.modello, scelte });
       if (nomePng) this.ctx.waitUntil(this.disegnaVolto(nomePng));
     } else this.tutti({ t: 'master_zitto' });
   }
@@ -1836,6 +2002,7 @@ PRIMA PARTITA: chi gioca non ha mai fatto un gioco di ruolo. Frasi corte, niente
       case 'oro': return pgMod(e.pg, p => { p.oro = Math.max(0, (p.oro || 0) + (Number(e.quantita) || 0)); }, `${Number(e.quantita) >= 0 ? 'guadagna' : 'spende'} ${Math.abs(Number(e.quantita) || 0)} monete d'oro`);
       case 'esperienza': { const nuovi = []; await pgMod(e.pg, p => { p.px = (p.px || 0) + n; for (const a of p.compagni || []) for (const t2 of cresciAnimale(a, n / 2)) nuovi.push(`${a.nome} (livello ${a.livello}) impara: ${t2}`); }, `guadagna ${n} punti esperienza`); if (nuovi.length) await this.annuncia(nuovi.join(' · ')); return; } // gli animali crescono con metà dei PX del padrone
       case 'tesoro_nascosto': return this.eventoCaccia(e);
+      case 'patto': case 'patto_chiuso': return this.eventoPatto(e);
       case 'tesoro_indizio': { const c2 = await this.get('caccia', null); if (!c2 || c2.trovato || c2.scoperti >= c2.indizi.length) return; c2.scoperti++; await this.put('caccia', c2); await this.annuncia(`Nuovo indizio per il tesoro: «${c2.indizi[c2.scoperti - 1]}»`); return this.aggiornaMondo(); }
       case 'rompicapo': return this.rompicapoNuovo(e);
       case 'torneo': return this.torneo('master', true, { t: 'torneo_apri' });
@@ -1865,7 +2032,7 @@ PRIMA PARTITA: chi gioca non ha mai fatto un gioco di ruolo. Frasi corte, niente
       case 'tempo': { const mo = await this.get('mondo', { fazioni: {}, valute: {}, viaggi: [], notizie: [] }); const cal = mo.calendario || { giorno: 1, stagione: 'primavera' }; const primaG = cal.giorno || 1; cal.giorno = primaG + Math.max(0, Math.min(365, Number(e.giorni) || 0)); cal.inizioStagione = cal.inizioStagione || 1;
         if (STAGIONI.includes(e.stagione) && e.stagione !== cal.stagione) { cal.stagione = e.stagione; cal.inizioStagione = cal.giorno; } // il master cambia stagione: da oggi si conta da capo
         else while (cal.giorno - cal.inizioStagione >= 30) { cal.inizioStagione += 30; cal.stagione = STAGIONI[(STAGIONI.indexOf(cal.stagione) + 1) % 4] || 'primavera'; } // passati 30 giorni la stagione cambia da sola
-        const festa = dataGioco(cal).festa; if (festa && cal.giorno !== primaG) await this.annuncia(`Oggi è la ${festa}!`);
+        const festa = dataGioco(cal).festa; if (festa && cal.giorno !== primaG) { await this.annuncia(`Oggi è la ${festa}!`); this.ctx.waitUntil(this.festaStagione(false, { ...cal })); }
         { const l = await this.get('missioni', []); let cambio = false; for (const q of l) if (q.stato !== 'completata' && q.stato !== 'scaduta' && q.scadenza && cal.giorno > q.scadenza) { q.stato = 'scaduta'; cambio = true; await this.annuncia(`Missione scaduta: ${q.titolo}.`); } if (cambio) { await this.put('missioni', l); await this.aggiornaMondo(); } } if (e.ora !== undefined && e.ora !== null && e.ora !== '') cal.ora = Math.max(0, Math.min(23, Number(e.ora) | 0)); if (['sereno', 'nuvoloso', 'pioggia', 'temporale', 'neve', 'nebbia'].includes(e.meteo)) cal.meteo = e.meteo; mo.calendario = cal; await this.put('mondo', mo); this.tutti({ t: 'mondo', mondo: mo }); return; }
       case 'valuta': { const mo = await this.get('mondo', { fazioni: {}, valute: {}, viaggi: [], notizie: [] }); const v = testo(e.nome, 40); if (!v) return; mo.valute[v] = { cambio: Math.max(0.001, Number(e.cambio) || 1) }; await this.put('mondo', mo); this.tutti({ t: 'mondo', mondo: mo }); return; }
       case 'valuta_pg': return pgMod(e.pg, p => { p.valute = { ...(p.valute || {}), [testo(e.valuta, 40)]: Math.max(0, (p.valute?.[e.valuta] || 0) + (Number(e.quantita) || 0)) }; }, `${Number(e.quantita) >= 0 ? 'ottiene' : 'spende'} ${Math.abs(Number(e.quantita) || 0)} ${testo(e.valuta, 40)}`);
@@ -1878,7 +2045,7 @@ PRIMA PARTITA: chi gioca non ha mai fatto un gioco di ruolo. Frasi corte, niente
         await this.put('segnalini', seg); this.tutti({ t: 'segnalini', segnalini: seg }); return;
       }
       case 'png': return e.via ? this.segnalino('master', true, { id: 'p_' + testo(e.nome, 20).replace(/\W+/g, '_'), rimuovi: true }) : this.segnalino('master', true, { id: 'p_' + testo(e.nome, 20).replace(/\W+/g, '_'), x: e.x, y: e.y, nome: testo(e.nome, 40), colore: '#bfae86', tipo: 'png' });
-      case 'nemico': this.ctx.waitUntil(this.disegnaMostro(e.nome)); await this.bestia(e.nome, 'visti'); return this.segnalino('master', true, { id: 'n_' + testo(e.nome, 20).replace(/\W+/g, '_') + '_' + (e.x | 0) + '_' + (e.y | 0), x: e.x, y: e.y, nome: e.nome, colore: '#d84b3c', tipo: 'nemico', pf: Number(e.pf) || undefined, ca: Number(e.ca) || undefined });
+      case 'nemico': { this.ctx.waitUntil(this.disegnaMostro(e.nome)); await this.bestia(e.nome, 'visti'); const fz = await this.forzaRivincita(e.nome, Number(e.pf) || undefined, Number(e.ca) || undefined); return this.segnalino('master', true, { id: 'n_' + testo(e.nome, 20).replace(/\W+/g, '_') + '_' + (e.x | 0) + '_' + (e.y | 0), x: e.x, y: e.y, nome: e.nome, colore: '#d84b3c', tipo: 'nemico', pf: fz.rivincita ? fz.pf : Number(e.pf) || undefined, ca: fz.rivincita ? fz.ca : Number(e.ca) || undefined }); }
     }
   }
 
