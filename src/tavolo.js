@@ -1733,10 +1733,14 @@ Rispondi SOLO JSON: {"png":[{"nome":"...","novita":"una frase","legame":{"con":"
     if (!await this.get('luogo:' + id)) {
       const c = await this.get('campagna');
       const tipo = /locanda|taverna|osteria/i.test(ed.nome) ? 'taverna' : 'interno';
-      let info = null;
       const domanda = `Ambientazione D&D: ${c.ambientazione}. Descrivi l'interno di "${ed.nome}" nel luogo "${padre.nome}"${ed.stato !== 'integro' ? ' (' + ed.stato + ')' : ''}. Rispondi SOLO JSON: {"descrizione":"massimo 60 parole in italiano, da leggere ad alta voce","stanze":["nome stanza 1", "... fino a 6 nomi brevi in italiano"],"png":"nome e ruolo di chi si trova dentro, o vuoto"}`;
-      if (this.env.AI) { try { const o = await this.env.AI.run('@cf/meta/llama-3.1-8b-instruct', { messages: [{ role: 'user', content: domanda }], max_tokens: 400 }); info = leggiJSON(o?.response || ''); if (info) info.da = 'cloudflare'; } catch {} }
-      if (!info) { const r = await this.g({ contents: [{ parts: [{ text: domanda }] }], generationConfig: { temperature: 0.8, responseMimeType: 'application/json' } }, 'racconto'); if (r.ok) { info = leggiJSON((await r.json()).candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || ''); if (info) info.da = 'gemini'; } }
+      // si entra subito: se l'IA che descrive l'interno tarda più di 10 secondi si usano stanze qualsiasi, e la descrizione arriva appena è pronta
+      const descrivi = (async () => { let info = null;
+        if (this.env.AI) { try { const o = await this.env.AI.run('@cf/meta/llama-3.1-8b-instruct', { messages: [{ role: 'user', content: domanda }], max_tokens: 400 }); info = leggiJSON(o?.response || ''); if (info) info.da = 'cloudflare'; } catch {} }
+        if (!info) { const r = await this.g({ contents: [{ parts: [{ text: domanda }] }], generationConfig: { temperature: 0.8, responseMimeType: 'application/json' } }, 'racconto'); if (r.ok) { info = leggiJSON((await r.json()).candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || ''); if (info) info.da = 'gemini'; } }
+        return info; })();
+      let info = await Promise.race([descrivi, new Promise(r => setTimeout(() => r('tardi'), 10000))]); const tardi = info === 'tardi'; if (tardi) info = null;
+      if (tardi) this.ctx.waitUntil(descrivi.then(async inf => { if (!inf?.descrizione) return; const l2 = await this.get('luogo:' + id); if (!l2 || l2.descrizione) return; l2.descrizione = testo(inf.descrizione, 600); l2.png = l2.png || testo(inf.png, 60); l2.generatoDa = inf.da; await this.put('luogo:' + id, l2); if (await this.get('luogoAttuale') === id) { const ev = await this.diario('narrazione', l2.descrizione, 'master'); this.tutti({ t: 'narra', testo: ev.testo, png: '', chi: 'master' }); } }).catch(() => {}));
       const stanze = Array.isArray(info?.stanze) && info.stanze.length ? info.stanze.map(x => testo(x, 30)) : ['Ingresso', 'Sala', 'Magazzino', 'Stanza privata', 'Cucina', 'Retro'];
       const l = generaLuogo(nome, tipo, c.creata + ':' + id, stanze);
       l.genitore = pid; l.descrizione = testo(info?.descrizione, 600); l.png = testo(info?.png, 60); l.generatoDa = info?.da || 'nessuna IA';
