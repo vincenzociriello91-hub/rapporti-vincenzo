@@ -989,11 +989,35 @@ Fatti recenti:\n${ev.map(d => `[${d.tipo}] ${testo(d.testo, 300)}`).join('\n')}`
 Altri personaggi del gruppo: ${altri.join('; ') || 'nessuno ancora'}.
 Razze possibili: ${razze.join(', ')}. Classi possibili: ${classi.join(', ')}.
 Conversazione finora:\n${storia || '(inizio)'}
-Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"una delle razze","classe":"una delle classi","allineamento":"...","aspetto":{"pelle":"chiara|olivastra|scura|molto scura","capelli":"corti|lunghi|coda|ricci|cresta|calvo","coloreCapelli":"nero|castano|biondo|rosso|bianco|grigio","barba":"nessuna|corta|lunga","occhi":"marroni|azzurri|verdi|grigi|ambra","corporatura":"normale|snella|robusta","figura":"maschile|femminile"},"storia":"passato in massimo 120 parole","legami":"legami con gli altri personaggi, una o due frasi"}}` }] }], generationConfig: { temperature: 0.85, responseMimeType: 'application/json' } }, 'comandi');
+Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"una delle razze","classe":"una delle classi","allineamento":"...","aspetto":{"pelle":"chiara|olivastra|scura|molto scura","capelli":"corti|lunghi|coda|ricci|cresta|calvo","coloreCapelli":"nero|castano|biondo|rosso|bianco|grigio","barba":"nessuna|corta|lunga","occhi":"marroni|azzurri|verdi|grigi|ambra","corporatura":"normale|snella|robusta|muscolosa","figura":"maschile|femminile","altezza":"cm, numero","peso":"kg, numero"},"storia":"passato in massimo 120 parole","legami":"legami con gli altri personaggi, una o due frasi"}}` }] }], generationConfig: { temperature: 0.85, responseMimeType: 'application/json' } }, 'comandi');
     if (!r.ok) return { errore: 'Il master non risponde, riprova tra poco' };
     const out = leggiJSON((await r.json()).candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '') || {};
-    if (out.proposta) { const pr = out.proposta; if (!razze.includes(pr.razza)) pr.razza = razze[0]; if (!classi.includes(pr.classe)) pr.classe = classi.includes('Guerriero') ? 'Guerriero' : classi[0]; return { proposta: pr }; }
+    if (out.proposta) { const pr = out.proposta; for (const k of ['altezza', 'peso']) if (pr.aspetto && k in pr.aspetto) { const n = parseInt(pr.aspetto[k], 10); if (n > 0 && n < 400) pr.aspetto[k] = n; else delete pr.aspetto[k]; } if (!razze.includes(pr.razza)) pr.razza = razze[0]; if (!classi.includes(pr.classe)) pr.classe = classi.includes('Guerriero') ? 'Guerriero' : classi[0]; return { proposta: pr }; }
     return { domanda: testo(out.domanda, 400) || 'Raccontami di più sul tuo personaggio.' };
+  }
+
+  // ---------- personaggio dalla descrizione del giocatore, o da una scheda già fatta (testo di un PDF o foto) ----------
+  async pgDaTesto(io, m) {
+    const c = await this.get('campagna'), lista = (a, n) => (Array.isArray(a) ? a : []).slice(0, n).map(x => testo(x, 30));
+    const razze = lista(m.razze, 20), classi = lista(m.classi, 20), abilita = lista(m.abilita, 40), scheda = !!m.scheda, descr = testo(m.testo || '', 8000);
+    const foto = typeof m.immagine === 'string' && m.immagine.length < 390000 && /^[A-Za-z0-9+/=]+$/.test(m.immagine) ? m.immagine : null;
+    if (!descr && !foto) return { errore: 'Scrivi la descrizione o carica la scheda' };
+    if (!razze.length || !classi.length) return { errore: 'Mancano razze e classi' };
+    const istr = scheda ? `Leggi questa scheda di un personaggio di D&D (${foto ? 'foto' : 'testo estratto da un PDF'}) e ricopiala fedelmente in italiano. In "car" metti i valori FINALI scritti sulla scheda. Se un dato manca lascialo vuoto o a 0: non inventare.`
+      : `Crea un personaggio di D&D di 1° livello dalla descrizione del giocatore, rispettandola il più possibile (nome, razza, classe, carattere, passato, aspetto, altezza in cm, peso in kg, corporatura). Quello che manca sceglilo tu, coerente con la descrizione. In "car" assegna i valori 15, 14, 13, 12, 10, 8 (uno per caratteristica, prima dei bonus di razza) secondo la descrizione e la classe. Equipaggiamento e incantesimi lasciali vuoti.`;
+    const testoP = `${istr}
+Campagna: ${c.ambientazione}, regole ${c.regole}. Razze possibili: ${razze.join(', ')}. Classi possibili: ${classi.join(', ')}.${abilita.length ? ` Abilità possibili: ${abilita.join(', ')}.` : ''}
+Rispondi SOLO JSON: {"nome":"...","razza":"una delle razze, la più vicina","classe":"una delle classi, la più vicina","livello":1,"allineamento":"Legale buono|Neutrale buono|Caotico buono|Legale neutrale|Neutrale|Caotico neutrale|Legale malvagio|Neutrale malvagio|Caotico malvagio","car":{"for":10,"des":10,"cos":10,"int":10,"sag":10,"car":10},"competenze":["abilità in cui è competente, tra quelle possibili"],"pfMax":0,"equip":["oggetto"],"incantesimi":[{"nome":"...","livello":0}],"oro":0,"aspetto":{"pelle":"chiara|olivastra|scura|molto scura","capelli":"corti|lunghi|coda|ricci|cresta|calvo","coloreCapelli":"nero|castano|biondo|rosso|bianco|grigio","barba":"nessuna|corta|lunga","occhi":"marroni|azzurri|verdi|grigi|ambra","corporatura":"normale|snella|robusta|muscolosa","figura":"maschile|femminile","altezza":0,"peso":0},"storia":"passato e carattere in massimo 120 parole"}
+${scheda ? 'Scheda' : 'Descrizione del giocatore'}:
+${descr || '(nella foto)'}`;
+    const parts = [{ text: testoP }, ...(foto ? [{ inline_data: { mime_type: 'image/jpeg', data: foto } }] : [])];
+    const r = await this.g({ contents: [{ parts }], generationConfig: { temperature: scheda ? 0.1 : 0.7, responseMimeType: 'application/json' } }, 'scheda', 60000);
+    if (!r.ok) return { errore: "L'IA non risponde, riprova tra poco" };
+    const pr = leggiJSON((await r.json()).candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '');
+    if (!pr || typeof pr !== 'object' || (!pr.nome && !pr.classe)) return { errore: scheda ? 'Non riesco a leggere la scheda: prova con una foto più nitida e dritta' : 'Non ho capito la descrizione, prova a scriverla in un altro modo' };
+    if (!razze.includes(pr.razza)) pr.razza = razze[0];
+    if (!classi.includes(pr.classe)) pr.classe = classi.includes('Guerriero') ? 'Guerriero' : classi[0];
+    return { proposta: JSON.parse(JSON.stringify(pr).replace(/</g, '‹')), scheda };
   }
 
   // prompt inglese per la scena attuale, dalle ultime narrazioni
@@ -1258,6 +1282,7 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
         case 'statistiche': return this.invia(ws, { t: 'statistiche', ...(await this.statistiche()) });
         case 'mese': return this.invia(ws, { t: 'mese', ...(await this.riepilogoMese(String(m.mese || ''))) });
         case 'sessione_zero': return this.invia(ws, { t: 'sessione_zero', ...(await this.sessioneZero(io, m)) });
+        case 'pg_da_testo': return this.invia(ws, { t: 'pg_da_testo', ...(await this.pgDaTesto(io, m)) });
         case 'relazione': {
           const rel = await this.get('relazioni', {}); const LIV = ['sconosciuti', 'conoscenti', 'amici', 'amici stretti', 'compagni di vita', 'famiglia', 'rivali'];
           if (!membri[m.con] || m.con === io || !LIV.includes(m.livello)) return;
