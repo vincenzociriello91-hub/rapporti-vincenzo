@@ -37,7 +37,7 @@ export const RISERVA = {
 export const PROMEMORIA = [['giorno', 86400000], ['ora', 3600000]]; // promemoria il giorno prima e un'ora prima
 export function b64url(b) { let s = ''; for (const x of b) s += String.fromCharCode(x); return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
 // cosa entra nella copia della campagna (non i membri con le loro chiavi, non le immagini)
-export const COPIA = /^(pg:|luogo:|note:|disegni:)|^(cronaca|appunti|fatti|bestiario|campagna|diario|memoria|mondo|png|luoghi|luogoAttuale|segnalini|gruppo|missioni|voto|enigma|nemesi|scelte|minacce|base|serate|riepiloghi|memoriale|relazioni|statistiche|avventura|tattiche|dungeonGiorno|aree|combattimento|negozio|noteMaster|daRiassumere)$/;
+export const COPIA = /^(pg:|luogo:|note:|disegni:)|^(homebrew|cronaca|appunti|fatti|bestiario|campagna|diario|memoria|mondo|png|luoghi|luogoAttuale|segnalini|gruppo|missioni|voto|enigma|nemesi|scelte|minacce|base|serate|riepiloghi|memoriale|relazioni|statistiche|avventura|tattiche|dungeonGiorno|aree|combattimento|negozio|noteMaster|daRiassumere)$/;
 export const PER_SPETTATORI = ['reazione', 'stato', 'riepiloghi', 'libro', 'statistiche', 'traduci', 'esci', 'impostazioni', 'rtc', 'suggerimento'];
 export const SILENZIO = 4 * 60000; // dopo quanti minuti di silenzio il master AI fa succedere qualcosa
 export const REAZIONI = ['👏', '😂', '😱', '🔥', '❤️', '🎲', '✋'];
@@ -267,3 +267,6 @@ export function dataGioco(cal) {
   const g = cal.giorno || 1, gs = g - (cal.inizioStagione || 1) + 1, [gf, festa] = FESTE[cal.stagione] || [0, ''];
   return { settimana: GIORNI_SETTIMANA[(g - 1) % 7], giornoStagione: gs, festa: gf === gs ? festa : null, prossimaFesta: gf > gs ? { nome: festa, tra: gf - gs } : null };
 }
+
+// chi si incontra lungo la strada nei viaggi a tappe (SRD): il numero cresce con il livello del gruppo
+export const INCONTRI_VIAGGIO = [{ nome: 'Lupo', numero: 2, gs: '1/4', pf: 11, ca: 13 }, { nome: 'Bandito', numero: 3, gs: '1/8', pf: 11, ca: 12 }, { nome: 'Goblin', numero: 3, gs: '1/4', pf: 7, ca: 15 }, { nome: 'Orso bruno', numero: 1, gs: '1', pf: 34, ca: 11 }, { nome: 'Ragno gigante', numero: 1, gs: '1', pf: 26, ca: 14 }, { nome: 'Hobgoblin', numero: 2, gs: '1/2', pf: 11, ca: 18 }];
