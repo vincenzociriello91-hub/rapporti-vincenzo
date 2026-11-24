@@ -129,9 +129,9 @@ export class Tavolo extends DurableObject {
 Scrivi anche, per ogni personaggio, una pagina del suo diario personale in prima persona (massimo 70 parole, con la sua voce e il suo punto di vista sulla serata). Personaggi: ${(await Promise.all(Object.keys(await this.get('membri', {})).map(async id => { const p = await this.get('pg:' + id); return p ? `${id}=${p.nome} (${p.razza} ${p.classe})` : null; }))).filter(Boolean).join('; ')}
 Rispondi SOLO JSON: {"titolo":"...","racconto":"...","prompt":"...","diari":{"<id personaggio>":"pagina di diario"}}
 Memoria della campagna: ${memoria || '(nessuna)'}
-Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('\n')}` }] }], generationConfig: { temperature: 0.8, responseMimeType: 'application/json' } }, 'master');
-    if (!r.ok) return this.tutti({ t: 'errore', msg: 'Riepilogo non disponibile ora' });
-    const out = leggiJSON((await r.json()).candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '') || {};
+Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('\n')}` }] }], generationConfig: { temperature: 0.8, responseMimeType: 'application/json' } }, 'master', 60000); // racconto e diari sono lunghi: ogni modello ha un minuto
+    // se l'IA non risponde il riepilogo arriva lo stesso, scritto con i numeri della serata
+    const out = r.ok ? leggiJSON((await r.json()).candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '') || {} : { racconto: [`Serata ${stats.sessione}.`, stats.luoghi.length ? `Il gruppo è passato da ${stats.luoghi.slice(0, 5).join(', ')}.` : '', stats.nemici.length ? `Ha sconfitto ${stats.nemici.length === 1 ? stats.nemici[0] : stats.nemici.length + ' nemici'}.` : '', stats.combattimenti ? `Combattimenti: ${stats.combattimenti}.` : '', stats.bottino.length ? `Bottino: ${stats.bottino.slice(-3).join('; ')}.` : '', '(Riassunto semplice: il master AI non ha risposto in tempo.)'].filter(Boolean).join(' '), prompt: 'a party of fantasy adventurers resting around a campfire at night after a long day, warm light' };
     stats.trofei = (await this.statistiche()).trofei;
     const rie = { t: Date.now(), titolo: testo(out.titolo, 100) || `Sessione ${stats.sessione}`, racconto: testo(out.racconto, 1800), stats, img: null };
     for (const [id, pagina] of Object.entries(out.diari && typeof out.diari === 'object' ? out.diari : {})) {
@@ -1743,9 +1743,9 @@ Rispondi SOLO JSON: {"domanda":"..."} oppure {"proposta":{"nome":"...","razza":"
   }
 
   // ---------- uso dell'AI: chiamate e token per sessione (pannello costi) ----------
-  async g(corpo, compito = 'master') {
+  async g(corpo, compito = 'master', attesa) {
     const leggero = ['comandi', 'regole', 'riassunto', 'memoria', 'interni'].includes(compito);
-    const r = compito === 'master' && this.env.ANTHROPIC_KEY ? await chiamaClaude(this.env, corpo).then(x => x.ok ? x : chiamaGemini(this.env, corpo)) : await chiamaGemini(this.env, corpo, leggero);
+    const r = compito === 'master' && this.env.ANTHROPIC_KEY ? await chiamaClaude(this.env, corpo).then(x => x.ok ? x : chiamaGemini(this.env, corpo, false, attesa)) : await chiamaGemini(this.env, corpo, leggero, attesa);
     if (r.ok) {
       try {
         const u = (await r.clone().json()).usageMetadata || {};

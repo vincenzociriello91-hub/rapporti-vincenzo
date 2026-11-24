@@ -3,7 +3,7 @@ import { testo } from './tavolo-util.js';
 // ---------- Gemini (modelli in fila: se uno è sovraccarico si passa al successivo) ----------
 // per 10 minuti si riparte dall'ultimo modello che ha risposto (gli altri possono essere esauriti o lenti)
 export const BUONI = {};
-export async function chiamaGemini(env, corpo, leggero) {
+export async function chiamaGemini(env, corpo, leggero, attesa = 30000) { // attesa: quanto si aspetta ogni modello (i compiti lunghi, come il riepilogo, un minuto)
   if (!env.GEMINI_KEY) return { ok: false, status: 503 };
   // maestro: modello migliore; allievo (compiti leggeri): Flash-Lite, più veloce e con più quota gratuita
   // ogni modello ha la sua quota gratuita: se uno è esaurito (429) o ritirato (404) si passa al successivo
@@ -14,8 +14,8 @@ export async function chiamaGemini(env, corpo, leggero) {
   for (const modello of modelli) {
     const url = `${env.GEMINI_BASE || 'https://generativelanguage.googleapis.com'}/v1beta/models/${encodeURIComponent(modello)}:generateContent?key=${encodeURIComponent(env.GEMINI_KEY)}`;
     // un modello che pensa troppo a lungo (fino a 524 dopo 100 s) blocca il turno: dopo 30 s si passa al successivo
-    if (Date.now() - inizio > 70000) break;
-    const invia = c => { const t = Date.now(); return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(c), signal: AbortSignal.timeout(30000) }).catch(() => new Response('{}', { status: 504 })).then(x => { tentativi.push({ modello, ms: Date.now() - t, stato: x.status, pensiero: c.generationConfig?.thinkingConfig ? JSON.stringify(c.generationConfig.thinkingConfig) : 'pieno' }); return x; }); };
+    if (Date.now() - inizio > attesa * 2 + 10000) break;
+    const invia = c => { const t = Date.now(); return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(c), signal: AbortSignal.timeout(attesa) }).catch(() => new Response('{}', { status: 504 })).then(x => { tentativi.push({ modello, ms: Date.now() - t, stato: x.status, pensiero: c.generationConfig?.thinkingConfig ? JSON.stringify(c.generationConfig.thinkingConfig) : 'pieno' }); return x; }); };
     r = await invia({ ...corpo, generationConfig: { ...corpo.generationConfig, thinkingConfig: { thinkingBudget: 0 } } });
     // Gemini 3 non accetta thinkingBudget 0: si prova il ragionamento minimo prima di quello pieno (lento, ~24 s per turno)
     if (r.status === 400) r = await invia({ ...corpo, generationConfig: { ...corpo.generationConfig, thinkingConfig: { thinkingLevel: 'minimal' } } });
