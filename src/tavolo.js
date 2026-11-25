@@ -2,7 +2,7 @@
 // Tiene lo stato persistente (membri, schede, luoghi e mappe, dadi, diario, memoria del master)
 // e fa da ponte per la voce (segnalazione WebRTC) e per il master AI (Gemini, chiave solo qui).
 import { DurableObject } from 'cloudflare:workers';
-import { codiceCasuale, sha, testo } from './tavolo-util.js';
+import { codiceCasuale, sha, stessoPng, testo } from './tavolo-util.js';
 import { INCONTRI_VIAGGIO, dataGioco, STAGIONI, COMPAGNI_ANIMALI, STANZE_BASE, MESTIERI, RICETTE, SEGRETI, senzaRegia, TIPI_EVENTO, TATTICHE, RISERVA, PROMEMORIA, b64url, COPIA, PER_SPETTATORI, SILENZIO, REAZIONI, MAZZO, DIFFICOLTA, LINGUE, SUONI, ATTESA_MASTER, SCENE_EN, COMPAGNI, AVVENTURE, trofei, CATALOGHI, tipoNegozio, prezzoBase, SOGLIE_PX, incontroCasuale, tesoroCasuale, pngCasuale, UMANOIDI, nomeMostro, stagione, tiraFormula, RARI, PX_ANIMALE, cresciAnimale, LIVELLI_BASE, RUNE, TRAPPOLE, nuovoRompicapo, rompicapoGiusto, nuovoTorneo, puntiGiro, cacciaDiRiserva, avventuraValida, SFIDANTI, EVENTI_STAGIONE, giornaleDiRiserva, nomeBase } from './tavolo-dati.js';
 import { chiamaGemini, sintesiVocale, STILE_IMG, STILI_IMG, generaImmagine, chiamaClaude, leggiJSON } from './tavolo-ai.js';
 import { chiaveLuogo, indovinaTipo, W, H, generaLuogo, ARREDI_V, griglia, vicine, percorso, vede, MOVIBILI, celleArea } from './tavolo-mappe.js';
@@ -363,9 +363,10 @@ Eventi della serata:\n${ev.slice(-120).map(d => `[${d.tipo}] ${d.testo}`).join('
   async traduci(ws, m) {
     const lingua = LINGUE[m.lingua], t = testo(m.testo, 1500); if (!lingua || !t) return;
     const k = m.lingua + ':' + t; if (this.traduzioni.has(k)) return this.invia(ws, { t: 'traduzione', id: m.id, testo: this.traduzioni.get(k) });
-    const r = await this.g({ contents: [{ parts: [{ text: `Traduci in ${lingua} questo testo di una partita di D&D, mantenendo nomi propri e tono. Rispondi solo con la traduzione.\n\n${t}` }] }], generationConfig: { temperature: 0.2, maxOutputTokens: 900 } }, 'regole');
-    if (!r.ok) return this.invia(ws, { t: 'traduzione', id: m.id, errore: true });
-    const out = ((await r.json()).candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('').trim();
+    // 15 s per modello: se il primo è lento si passa al successivo prima che il giocatore smetta di aspettare
+    const r = await this.g({ contents: [{ parts: [{ text: `Traduci in ${lingua} questo testo di una partita di D&D, mantenendo nomi propri e tono. Rispondi solo con la traduzione.\n\n${t}` }] }], generationConfig: { temperature: 0.2, maxOutputTokens: 900 } }, 'regole', 15000);
+    const out = r.ok ? ((await r.json().catch(() => ({}))).candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('').trim() : '';
+    if (!out) return this.invia(ws, { t: 'traduzione', id: m.id, errore: true }); // risposta vuota: si legge l'originale e non si ricorda
     if (this.traduzioni.size > 300) this.traduzioni.clear(); this.traduzioni.set(k, out);
     this.invia(ws, { t: 'traduzione', id: m.id, testo: out });
   }
@@ -2069,7 +2070,12 @@ PRIMA PARTITA: chi gioca non ha mai fatto un gioco di ruolo. Frasi corte, niente
         if (s2.pf <= 0) { await this.conta('gruppo', { nemici: 1 }); await this.bestia(s2.nome, 'sconfitti'); delete seg[e.nemico]; const c = await this.get('combattimento'); if (c?.attivo) await this.combattimento('master', {}, true, { azione: 'togli', id: e.nemico }); const ev = await this.diario('combattimento', `${s2.nome} è sconfitto.`, 'master'); this.tutti({ t: 'diario', ev }); }
         await this.put('segnalini', seg); this.tutti({ t: 'segnalini', segnalini: seg }); return;
       }
-      case 'png': return e.via ? this.segnalino('master', true, { id: 'p_' + testo(e.nome, 20).replace(/\W+/g, '_'), rimuovi: true }) : this.segnalino('master', true, { id: 'p_' + testo(e.nome, 20).replace(/\W+/g, '_'), x: e.x, y: e.y, nome: testo(e.nome, 40), colore: '#bfae86', tipo: 'png' });
+      case 'png': { // lo stesso PNG chiamato in due modi resta una figura sola, con il nome più completo e il suo posto
+        const nome = testo(e.nome, 40), seg = await this.get('segnalini', {}), gia = Object.keys(seg).find(k => seg[k].tipo === 'png' && stessoPng(seg[k].nome, nome));
+        const id = gia || 'p_' + testo(e.nome, 20).replace(/\W+/g, '_'), prima = gia && seg[gia];
+        if (e.via) return this.segnalino('master', true, { id, rimuovi: true });
+        return this.segnalino('master', true, { id, x: e.x ?? prima?.x, y: e.y ?? prima?.y, nome: prima && prima.nome.length > nome.length ? prima.nome : nome, colore: '#bfae86', tipo: 'png' });
+      }
       case 'nemico': { this.ctx.waitUntil(this.disegnaMostro(e.nome)); await this.bestia(e.nome, 'visti'); const fz = await this.forzaRivincita(e.nome, Number(e.pf) || undefined, Number(e.ca) || undefined); return this.segnalino('master', true, { id: 'n_' + testo(e.nome, 20).replace(/\W+/g, '_') + '_' + (e.x | 0) + '_' + (e.y | 0), x: e.x, y: e.y, nome: e.nome, colore: '#d84b3c', tipo: 'nemico', pf: fz.rivincita ? fz.pf : Number(e.pf) || undefined, ca: fz.rivincita ? fz.ca : Number(e.ca) || undefined }); }
     }
   }
