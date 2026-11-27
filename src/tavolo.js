@@ -934,7 +934,8 @@ Fatti recenti:\n${ev.map(d => `[${d.tipo}] ${testo(d.testo, 300)}`).join('\n')}`
     const membri = await this.get('membri', {}), pgs = [];
     for (const id of Object.keys(membri)) { const p = await this.get('pg:' + id); if (p && membri[id].ruolo === 'giocatore') pgs.push(p); }
     const luogo = await this.get('luogo:' + await this.get('luogoAttuale'));
-    const chiedi = async (testoP) => { const r = await this.g({ contents: [{ parts: [{ text: testoP }] }], generationConfig: { temperature: 0.9, responseMimeType: 'application/json' } }, 'racconto'); return r.ok ? leggiJSON((await r.json()).candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '') : null; };
+    // il master aspetta col tasto premuto: modello leggero e 15 s per tentativo (con i modelli pieni lenti si arrivava oltre un minuto)
+    const chiedi = async (testoP) => { const r = await this.g({ contents: [{ parts: [{ text: testoP }] }], generationConfig: { temperature: 0.9, responseMimeType: 'application/json' } }, 'strumento', 15000); return r.ok ? leggiJSON((await r.json()).candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '') : null; };
     if (m.tipo === 'png') {
       const ai = await chiedi(`Inventa un personaggio non giocante per una campagna di D&D, in italiano, adatto a: ${luogo?.nome || 'un villaggio'} (${luogo?.tipo || ''}). Rispondi SOLO JSON {"nome":"...","razza":"...","mestiere":"...","aspetto":"una frase","tratto":"modo di fare","segreto":"un segreto","battuta":"prima frase che dice"}`);
       return ai?.nome ? ai : pngCasuale();
@@ -1770,7 +1771,7 @@ ${descr || '(nella foto)'}`;
 
   // ---------- uso dell'AI: chiamate e token per sessione (pannello costi) ----------
   async g(corpo, compito = 'master', attesa) {
-    const leggero = ['comandi', 'regole', 'riassunto', 'memoria', 'interni'].includes(compito);
+    const leggero = ['comandi', 'regole', 'riassunto', 'memoria', 'interni', 'strumento'].includes(compito);
     const r = compito === 'master' && this.env.ANTHROPIC_KEY ? await chiamaClaude(this.env, corpo).then(x => x.ok ? x : chiamaGemini(this.env, corpo, false, attesa)) : await chiamaGemini(this.env, corpo, leggero, attesa);
     if (r.ok) {
       try {
